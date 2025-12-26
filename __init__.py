@@ -1,5 +1,5 @@
 from aqt import mw, gui_hooks
-from aqt.qt import QAction
+from aqt.qt import QAction, QDialog, QVBoxLayout, QLabel, QPushButton
 from aqt.utils import tooltip
 from .data import (
 	get_word_data,
@@ -63,9 +63,25 @@ def on_info():
 	basic_perc     = (basic_mass     / total_mass * 100) if total_mass else 0
 	retrieval_perc = (retrieval_mass / total_mass * 100) if total_mass else 0
 
-	tooltip(
-		f"Basic estimated comprehension: {basic_perc:.4f}%<br>Retrievability-weighted: {retrieval_perc:.4f}%<br>Based on {len(known)} words"
+	info_text = (
+		f"Basic estimated comprehension: {basic_perc:.4f}%<br>"
+		f"Retrievability-weighted: {retrieval_perc:.4f}%<br>"
+		f"Based on {len(known)} words"
 	)
+
+	dialog = QDialog(mw)
+	dialog.setWindowTitle("Chinese Words Info")
+	layout = QVBoxLayout()
+	dialog.setLayout(layout)
+
+	label = QLabel(info_text)
+	layout.addWidget(label)
+
+	button = QPushButton("Close")
+	button.clicked.connect(dialog.accept)
+	layout.addWidget(button)
+
+	dialog.exec()
 
 def on_card_will_show(card):
 	if card.note_type()['name'] != "chinese-word":
