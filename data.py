@@ -146,5 +146,15 @@ def get_word_data(word: str):
 	freq_level = get_frequency_level(word)
 	return hsk, defs, pinyin, freq_rank, freq_weight, freq_level
 
+@lru_cache(maxsize=None)
+def get_hsk_counts():
+	counts = defaultdict(int)
+	for lvl in _HSK_MAP.values():
+		counts[lvl] += 1
+	return dict(counts)
+
+def get_all_words():
+	return list(_RANK_MAP.keys())
+
 _HSK_MAP = _build_hsk_map()
 _RANK_MAP, _WEIGHT_MAP = _build_freq_maps()

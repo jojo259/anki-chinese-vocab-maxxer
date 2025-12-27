@@ -1,1 +1,4 @@
-{}
+{
+    "graph_bucket_size": 100,
+    "graph_max_rank": 10000
+}
