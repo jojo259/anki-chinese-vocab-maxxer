@@ -1,1 +1,13 @@
-{"disabled": false, "mod": 0, "conflicts": [], "max_point_version": 0, "min_point_version": 0, "branch_index": 0, "update_enabled": true, "config": {}}
+{
+    "disabled": false,
+    "mod": 0,
+    "conflicts": [],
+    "max_point_version": 0,
+    "min_point_version": 0,
+    "branch_index": 0,
+    "update_enabled": true,
+    "config": {
+        "graph_bucket_size": 100,
+        "graph_max_rank": 10000
+    }
+}

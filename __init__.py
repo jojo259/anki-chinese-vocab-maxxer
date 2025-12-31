@@ -12,6 +12,8 @@ from .data import (
 )
 import math
 
+_pre_review_ivl = {}
+_session_gain = 0.0
 _last_retrievabilities = {}
 
 def on_update_all():
@@ -584,11 +586,41 @@ class ChineseInfoDialog(QDialog):
 			f"Retrievability-weighted: <b>{retrieval_perc:.4f}%</b><br>"
 			f"Based on <b>{len(known)}</b> words<br>"
 		)
+
+		today_val = self._calc_todays_gain()
+		
+		info_text += f"Today's Net Interval Gain: <b>{today_val:+.0f} days</b><br>"
 		
 		if not show_hsk:
 			info_text += f"Highest Rank Found: {max_rank_found} (Graph limited to {max_rank_cutoff})"
 			
 		self.stats_label.setText(info_text)
+
+	def _calc_todays_gain(self):
+		col = mw.col
+		# Day cutoff in seconds * 1000 for ms
+		day_start_ms = (col.sched.day_cutoff - 86400) * 1000
+		
+		chinese_cids = set(col.find_cards("note:chinese-word"))
+		if not chinese_cids:
+			return 0.0
+
+		reviews = col.db.all(f"SELECT cid, ivl, lastIvl FROM revlog WHERE id > {day_start_ms}")
+		
+		total_gain = 0.0
+		
+		for (cid, ivl, last_ivl) in reviews:
+			if cid not in chinese_cids:
+				continue
+			
+			def to_days(val):
+				if val < 0: return abs(val) / 86400.0
+				return float(val)
+				
+			total_gain += (to_days(ivl) - to_days(last_ivl))
+			
+		return total_gain
+
 
 def on_info():
 	mw.chinese_info_dialog = ChineseInfoDialog(mw)
@@ -597,9 +629,7 @@ def on_info():
 def on_card_will_show(card):
 	if card.note_type()['name'] != "chinese-word":
 		return
-	stats = mw.col.card_stats_data(card.id)
-	r_before = getattr(stats, 'fsrs_retrievability', 0.0)
-	_last_retrievabilities[card.id] = r_before
+	_pre_review_ivl[card.id] = card.ivl
 
 
 def on_card_reviewed(reviewer, card, ease):
@@ -611,18 +641,30 @@ def on_card_reviewed(reviewer, card, ease):
 	stats = mw.col.card_stats_data(card.id)
 	r_after = getattr(stats, 'fsrs_retrievability', 0.0)
 
-	global _last_retrievabilities
-	r_before = _last_retrievabilities.get(card.id, 0.0)
-	_last_retrievabilities[card.id] = r_after
+	global _pre_review_ivl
+	ivl_before = _pre_review_ivl.get(card.id, 0)
+	_pre_review_ivl[card.id] = card.ivl
 
+	def to_days(val):
+		if val < 0: return abs(val) / 86400.0
+		return float(val)
 
-
-	delta = freq_weight * (r_after - r_before)
+	delta_days = to_days(card.ivl) - to_days(ivl_before)
+	
+	global _session_gain
+	_session_gain += delta_days
+	
 	total_mass = get_total_frequency_mass()
 	if total_mass:
+		global _last_retrievabilities
+		r_before = _last_retrievabilities.get(card.id, 0.0)
+		_last_retrievabilities[card.id] = r_after
+		
+		delta = freq_weight * (r_after - r_before)
 		comprehension_change = delta / total_mass
 		comprehension_change = max(comprehension_change, 0.0000000001)
-		tooltip(f"Comprehension change: 1 / {readable_number(1 / comprehension_change)}")
+		
+		tooltip(f"Comprehension change: 1 / {readable_number(1 / comprehension_change)}<br>Days Gained: {delta_days:+.0f} (Session: {_session_gain:+.0f})")
 
 def readable_number(x):
 	if x > 1_000_000_000:
