@@ -52,18 +52,21 @@ def on_update_all():
 
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
-	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView
+	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
 )
 
 class FrequencyGraph(QWidget):
 	def __init__(self, parent=None):
 		super().__init__(parent)
+		self.setMouseTracking(True)
 		self.bucket_counts = []
 		self.unreviewed_counts = []
+		self.bucket_stats_list = []
 		self.bucket_size = 100
 		self.max_rank = 10000
 		self.hsk_mode = False
 		self.hsk_totals = {}
+		self.bar_rects = [] # (rect, bucket_index)
 		self.setMinimumHeight(200)
 
 	def set_config(self, bucket_size, max_rank):
@@ -74,10 +77,62 @@ class FrequencyGraph(QWidget):
 		self.hsk_mode = enabled
 		self.hsk_totals = totals or {}
 
-	def set_data(self, bucket_counts, unreviewed_counts=None):
+	def set_data(self, bucket_counts, unreviewed_counts=None, bucket_stats_list=None):
 		self.bucket_counts = bucket_counts
 		self.unreviewed_counts = unreviewed_counts if unreviewed_counts else []
+		self.bucket_stats_list = bucket_stats_list if bucket_stats_list else []
 		self.update()
+
+	def mouseMoveEvent(self, event):
+		p = event.position()
+		px, py = p.x(), p.y()
+		tooltip_text = ""
+		
+		# Find if mouse is over any bar rect
+		for rect, idx in self.bar_rects:
+			if rect.left() <= px <= rect.right() and rect.top() <= py <= rect.bottom():
+				# Calculate stats for this bucket
+				count = self.bucket_counts[idx] if idx < len(self.bucket_counts) else 0
+				unrev_count = 0
+				if idx < len(self.unreviewed_counts):
+					unrev_count = self.unreviewed_counts[idx]
+				
+				if self.hsk_mode:
+					label = f"HSK {idx + 1}"
+					total_in_bucket = self.hsk_totals.get(idx + 1, 1)
+				else:
+					start_rank = idx * self.bucket_size + 1
+					end_rank = (idx + 1) * self.bucket_size
+					label = f"Freq Rank: {start_rank} - {end_rank}"
+					total_in_bucket = self.bucket_size
+				
+				total_in_bucket = max(1, total_in_bucket)
+				
+				pct_known = (count / total_in_bucket) * 100.0
+				pct_total = ((count + unrev_count) / total_in_bucket) * 100.0
+				
+				stats = self.bucket_stats_list[idx] if idx < len(self.bucket_stats_list) else {}
+				avg_r = stats.get('avg_retrievability', 0)
+				avg_s = stats.get('avg_stability', 0)
+				
+				cov_k = stats.get('coverage_known', 0)
+				cov_t = stats.get('coverage_total', 0)
+				
+				tooltip_text = (
+					f"<b>{label}</b><br>"
+					f"Known: {count} ({pct_known:.1f}%)<br>"
+					f"Including Unreviewed: {count + unrev_count} ({pct_total:.1f}%)<br>"
+					f"Avg Retrievability: {avg_r:.1f}%<br>"
+					f"Avg Stability: {avg_s:.1f} days<br>"
+					f"Coverage (Known): +{cov_k:.6f}%<br>"
+					f"Coverage (Known + New): +{cov_t:.6f}%"
+				)
+				break
+		
+		if tooltip_text:
+			QToolTip.showText(event.globalPosition().toPoint(), tooltip_text, self)
+		else:
+			QToolTip.hideText()
 
 	def paintEvent(self, event):
 		painter = QPainter(self)
@@ -92,6 +147,8 @@ class FrequencyGraph(QWidget):
 		graph_h = h - margin_bottom
 
 		painter.fillRect(0, 0, w, h, QColor("#f0f0f0"))
+		
+		self.bar_rects = [] # Clear previous rects
 
 		if not self.bucket_counts:
 			return
@@ -141,6 +198,11 @@ class FrequencyGraph(QWidget):
 			painter.setBrush(QBrush(QColor("#5c9eff")))
 			rect_known = QRectF(x, y_known, bar_width, h_known)
 			painter.drawRect(rect_known)
+			
+			# Store rect for tooltip (full bar height from bottom)
+			full_height = h_known + h_unrev
+			full_y = y_known - h_unrev
+			self.bar_rects.append((QRectF(x, full_y, bar_width, full_height), i))
 			
 			if h_unrev > 0:
 				painter.setBrush(QBrush(QColor("#f2c94c")))
@@ -375,29 +437,38 @@ class ChineseInfoDialog(QDialog):
 		query_base = f"note:chinese-word card:{card_type} -is:suspended"
 		query_known = f"{query_base} (is:learn OR is:review)"
 		
-		known = {}
+		# Gather known words stats
+		known = {} # word -> {'r': retrievability, 's': stability}
 		for cid in col.find_cards(query_known):
 			card = col.get_card(cid)
 			note = card.note()
 			stats = mw.col.card_stats_data(card.id)
-			r = stats.fsrs_retrievability
-			known[note['word']] = r
+			r = stats.fsrs_retrievability or 0.0
+			s = 0.0
+			if getattr(card, 'memory_state', None):
+				s = card.memory_state.stability
+			known[note['word']] = {'r': r, 's': s}
 
+		# Gather unreviewed words if needed
 		unreviewed_words = set()
 		if show_unreviewed:
-			present_words = set()
+			# Get all words from base query
 			for cid in col.find_cards(query_base):
 				card = col.get_card(cid)
 				note = card.note()
-				present_words.add(note['word'])
-			
-			for w in present_words:
+				w = note['word']
 				if w not in known:
 					unreviewed_words.add(w)
 
+		def get_mass(w):
+			val = get_frequency_weight(w)
+			if val is None: return 0.0
+			# Enforce minimum weight to ensure visibility in UI
+			return max(val, 1e-9)
+
 		total_mass = get_total_frequency_mass()
-		basic_mass = sum(get_frequency_weight(w) or 0 for w in known)
-		retrieval_mass = sum((get_frequency_weight(w) or 0) * r for w, r in known.items())
+		basic_mass = sum(get_mass(w) for w in known)
+		retrieval_mass = sum(get_mass(w) * (d['r'] or 0) for w, d in known.items())
 
 		basic_perc = (basic_mass / total_mass * 100) if total_mass else 0
 		retrieval_perc = (retrieval_mass / total_mass * 100) if total_mass else 0
@@ -407,30 +478,62 @@ class ChineseInfoDialog(QDialog):
 		bucket_counts = {}
 		unreviewed_bucket_counts = {}
 		
+		# bucket stats: idx -> {stats}
+		bucket_stats = {} 
+		
+		def get_bucket_stats(idx):
+			if idx not in bucket_stats:
+				bucket_stats[idx] = {'sum_r': 0.0, 'sum_s': 0.0, 'count_known': 0, 'mass_known': 0.0, 'mass_total': 0.0}
+			return bucket_stats[idx]
+
 		if show_hsk:
-			for word in known:
+			# HSK Mode
+			for word, d in known.items():
 				lvl = get_hsk_level(word)
 				if lvl and 1 <= lvl <= 6:
 					b_idx = lvl - 1
+					s = get_bucket_stats(b_idx)
 					bucket_counts[b_idx] = bucket_counts.get(b_idx, 0) + 1
-			
+					
+					s['sum_r'] += (d['r'] or 0) * 100
+					s['sum_s'] += d['s'] or 0
+					s['count_known'] += 1
+					
+					w_mass = get_mass(word)
+					s['mass_known'] += w_mass
+					s['mass_total'] += w_mass
+
 			if show_unreviewed:
 				for word in unreviewed_words:
 					lvl = get_hsk_level(word)
 					if lvl and 1 <= lvl <= 6:
 						b_idx = lvl - 1
+						s = get_bucket_stats(b_idx)
 						unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
+						
+						w_mass = get_mass(word)
+						s['mass_total'] += w_mass
 			
 			total_buckets_needed = 6
 			
 		else:
-			for word in known:
+			# Freq Rank Mode
+			for word, d in known.items():
 				rank = get_frequency_rank(word)
 				if rank:
 					max_rank_found = max(max_rank_found, rank)
 					if rank <= max_rank_cutoff:
 						b_idx = (rank - 1) // bucket_size
+						s = get_bucket_stats(b_idx)
 						bucket_counts[b_idx] = bucket_counts.get(b_idx, 0) + 1
+						
+						s['sum_r'] += (d['r'] or 0) * 100
+						s['sum_s'] += d['s'] or 0
+						s['count_known'] += 1
+						
+						w_mass = get_mass(word)
+						s['mass_known'] += w_mass
+						s['mass_total'] += w_mass
 
 			if show_unreviewed:
 				for word in unreviewed_words:
@@ -439,23 +542,41 @@ class ChineseInfoDialog(QDialog):
 						max_rank_found = max(max_rank_found, rank)
 						if rank <= max_rank_cutoff:
 							b_idx = (rank - 1) // bucket_size
+							s = get_bucket_stats(b_idx)
 							unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
+							
+							w_mass = get_mass(word)
+							s['mass_total'] += w_mass
 			
 			total_buckets_needed = max_rank_cutoff // bucket_size
 		
 		data_list = [0] * total_buckets_needed
 		unrev_list = [0] * total_buckets_needed
+		stats_list = []
 
-		for idx, count in bucket_counts.items():
-			if idx < total_buckets_needed:
-				data_list[idx] = count
+		for idx in range(total_buckets_needed):
+			count = bucket_counts.get(idx, 0)
+			data_list[idx] = count
+			
+			unrev = unreviewed_bucket_counts.get(idx, 0)
+			if show_unreviewed:
+				unrev_list[idx] = unrev
+			
+			s = bucket_stats.get(idx, {'sum_r':0, 'sum_s':0, 'count_known':0, 'mass_known':0, 'mass_total':0})
+			c_known = s['count_known']
+			avg_r = (s['sum_r'] / c_known) if c_known else 0
+			avg_s = (s['sum_s'] / c_known) if c_known else 0
+			cov_k = (s['mass_known'] / total_mass * 100) if total_mass else 0
+			cov_t = (s['mass_total'] / total_mass * 100) if total_mass else 0
+			
+			stats_list.append({
+				'avg_retrievability': avg_r, 
+				'avg_stability': avg_s,
+				'coverage_known': cov_k,
+				'coverage_total': cov_t
+			})
 		
-		if show_unreviewed:
-			for idx, count in unreviewed_bucket_counts.items():
-				if idx < total_buckets_needed:
-					unrev_list[idx] = count
-		
-		self.graph.set_data(data_list, unrev_list if show_unreviewed else None)
+		self.graph.set_data(data_list, unrev_list if show_unreviewed else None, stats_list)
 		
 		info_text = (
 			f"<h3>Stats for '{card_type}'</h3>"
