@@ -52,9 +52,12 @@ def on_update_all():
 				print(f'updated {cnt} chinese notes')
 	tooltip(f"Updated {cnt} notes")
 
+import datetime
+import time
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
-	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
+	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
+	QPainterPath, QPointF, QLinearGradient
 )
 
 class FrequencyGraph(QWidget):
@@ -63,6 +66,7 @@ class FrequencyGraph(QWidget):
 		self.setMouseTracking(True)
 		self.bucket_counts = []
 		self.unreviewed_counts = []
+		self.simulated_counts = []
 		self.bucket_stats_list = []
 		self.bucket_size = 100
 		self.max_rank = 10000
@@ -79,9 +83,10 @@ class FrequencyGraph(QWidget):
 		self.hsk_mode = enabled
 		self.hsk_totals = totals or {}
 
-	def set_data(self, bucket_counts, unreviewed_counts=None, bucket_stats_list=None):
+	def set_data(self, bucket_counts, unreviewed_counts=None, simulated_counts=None, bucket_stats_list=None):
 		self.bucket_counts = bucket_counts
 		self.unreviewed_counts = unreviewed_counts if unreviewed_counts else []
+		self.simulated_counts = simulated_counts if simulated_counts else []
 		self.bucket_stats_list = bucket_stats_list if bucket_stats_list else []
 		self.update()
 
@@ -127,7 +132,8 @@ class FrequencyGraph(QWidget):
 					f"Avg Retrievability: {avg_r:.1f}%<br>"
 					f"Avg Stability: {avg_s:.1f} days<br>"
 					f"Coverage (Known): +{cov_k:.6f}%<br>"
-					f"Coverage (Known + New): +{cov_t:.6f}%"
+					f"Coverage (Known + New): +{cov_t:.6f}%<br>"
+					f"Simulated Gain: +{stats.get('coverage_sim', 0):.6f}%"
 				)
 				break
 		
@@ -203,13 +209,27 @@ class FrequencyGraph(QWidget):
 			
 			# Store rect for tooltip (full bar height from bottom)
 			full_height = h_known + h_unrev
-			full_y = y_known - h_unrev
+			
+			pct_sim = 0.0
+			h_sim = 0.0
+			if i < len(self.simulated_counts):
+				pct_sim = (self.simulated_counts[i] / total_in_bucket) * 100.0
+				h_sim = (pct_sim / max_y_val) * graph_h
+				full_height += h_sim
+				
+			full_y = y_known - h_unrev - h_sim
 			self.bar_rects.append((QRectF(x, full_y, bar_width, full_height), i))
 			
 			if h_unrev > 0:
 				painter.setBrush(QBrush(QColor("#f2c94c")))
 				rect_unrev = QRectF(x, y_unrev, bar_width, h_unrev)
 				painter.drawRect(rect_unrev)
+
+			if h_sim > 0:
+				y_sim = y_unrev - h_sim
+				painter.setBrush(QBrush(QColor("#9c27b0"))) # Purple for simulated
+				rect_sim = QRectF(x, y_sim, bar_width, h_sim)
+				painter.drawRect(rect_sim)
 
 		painter.setPen(Qt.GlobalColor.black)
 		
@@ -335,6 +355,346 @@ class NewWordsDialog(QDialog):
 			self.btn_load.setEnabled(False)
 			self.btn_load.setText("No More Words")
 
+class HistoryGraph(QWidget):
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.setMouseTracking(True)
+		self.data_history = [] # list of (timestamp_sec, basic_pct, weighted_pct)
+		self.setMinimumHeight(300)
+		self.hover_idx = -1
+
+	def set_data(self, history):
+		self.data_history = history
+		self.update()
+
+	def mouseMoveEvent(self, event):
+		if not self.data_history:
+			return
+		
+		p = event.position()
+		x = p.x()
+		w = self.width()
+		margin_left = 60
+		margin_right = 20
+		graph_w = w - margin_left - margin_right
+		
+		if x < margin_left or x > w - margin_right:
+			if self.hover_idx != -1:
+				self.hover_idx = -1
+				QToolTip.hideText()
+				self.update()
+			return
+
+		ratio = (x - margin_left) / graph_w
+		idx = int(ratio * (len(self.data_history) - 1))
+		idx = max(0, min(idx, len(self.data_history) - 1))
+		
+		if idx != self.hover_idx:
+			self.hover_idx = idx
+			self.update()
+			
+			ts, basic, weighted, weighted_all = self.data_history[idx]
+			date_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+			
+			tooltip_text = (
+				f"<b>{date_str}</b><br>"
+				f"Basic (Active): {basic:.2f}%<br>"
+				f"Weighted (Active): {weighted:.2f}%<br>"
+				f"<span style='color:#f0ad4e'>Weighted (Inc. Suspended): {weighted_all:.2f}%</span>"
+			)
+			QToolTip.showText(event.globalPosition().toPoint(), tooltip_text, self)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		
+		w = self.width()
+		h = self.height()
+		margin_left = 60
+		margin_bottom = 30
+		margin_right = 20
+		margin_top = 20
+		
+		graph_w = w - margin_left - margin_right
+		graph_h = h - margin_bottom - margin_top
+		
+		painter.fillRect(0, 0, w, h, QColor("#ffffff"))
+		
+		# Draw axes
+		painter.setPen(QPen(QColor("#cccccc"), 1))
+		painter.drawLine(margin_left, margin_top, margin_left, int(h - margin_bottom)) # Y axis
+		painter.drawLine(margin_left, int(h - margin_bottom), int(w - margin_right), int(h - margin_bottom)) # X axis
+		
+		# Y axis labels
+		painter.setPen(Qt.GlobalColor.black)
+		for i in range(0, 101, 20):
+			y = h - margin_bottom - (i / 100.0) * graph_h
+			painter.drawText(5, int(y + 5), 50, 20, Qt.AlignmentFlag.AlignRight, f"{i}%")
+			painter.setPen(QPen(QColor("#eeeeee"), 1))
+			painter.drawLine(margin_left, int(y), int(w - margin_right), int(y))
+			painter.setPen(Qt.GlobalColor.black)
+
+		if not self.data_history:
+			return
+
+		# Create paths
+		path_basic = QPainterPath()
+		path_weighted = QPainterPath()
+		path_all = QPainterPath()
+		
+		start_ts = self.data_history[0][0]
+		end_ts = self.data_history[-1][0]
+		duration = end_ts - start_ts or 1
+		
+		def get_pt(i, val):
+			ts = self.data_history[i][0]
+			x = margin_left + ((ts - start_ts) / duration) * graph_w
+			y = h - margin_bottom - (val / 100.0) * graph_h
+			return QPointF(x, y)
+
+		path_basic.moveTo(get_pt(0, self.data_history[0][1]))
+		path_weighted.moveTo(get_pt(0, self.data_history[0][2]))
+		path_all.moveTo(get_pt(0, self.data_history[0][3]))
+		
+		for i in range(1, len(self.data_history)):
+			path_basic.lineTo(get_pt(i, self.data_history[i][1]))
+			path_weighted.lineTo(get_pt(i, self.data_history[i][2]))
+			path_all.lineTo(get_pt(i, self.data_history[i][3]))
+			
+		# Draw All (Yellow) first so it is behind
+		pen_all = QPen(QColor("#f2c94c"), 2)
+		painter.setPen(pen_all)
+		painter.drawPath(path_all)
+
+		# Draw Basic (Blue)
+		pen_basic = QPen(QColor("#5c9eff"), 2)
+		painter.setPen(pen_basic)
+		painter.drawPath(path_basic)
+		
+		# Draw Weighted (Red)
+		pen_weighted = QPen(QColor("#e91e63"), 2)
+		painter.setPen(pen_weighted)
+		painter.drawPath(path_weighted)
+
+		# Legend
+		painter.setPen(Qt.GlobalColor.black)
+		
+		# Basic
+		painter.fillRect(margin_left + 10, margin_top + 10, 10, 10, QColor("#5c9eff"))
+		painter.drawText(margin_left + 25, margin_top + 20, "Basic (Active)")
+		
+		# Weighted
+		painter.fillRect(margin_left + 10, margin_top + 30, 10, 10, QColor("#e91e63"))
+		painter.drawText(margin_left + 25, margin_top + 40, "Weighted (Active)")
+
+		# All
+		painter.fillRect(margin_left + 150, margin_top + 30, 10, 10, QColor("#f2c94c"))
+		painter.drawText(margin_left + 165, margin_top + 40, "Weighted (Inc. Suspended)")
+
+
+		# Hover line
+		if self.hover_idx >= 0:
+			ts, basic, weighted, w_all = self.data_history[self.hover_idx]
+			x = margin_left + ((ts - start_ts) / duration) * graph_w
+			painter.setPen(QPen(QColor("#000000"), 1, Qt.PenStyle.DashLine))
+			painter.drawLine(int(x), margin_top, int(x), int(h - margin_bottom))
+			
+			# Draw dots
+			y_b = h - margin_bottom - (basic / 100.0) * graph_h
+			y_w = h - margin_bottom - (weighted / 100.0) * graph_h
+			y_a = h - margin_bottom - (w_all / 100.0) * graph_h
+			
+			painter.setBrush(QBrush(QColor("#f2c94c")))
+			painter.drawEllipse(QPointF(x, y_a), 4, 4)
+			
+			painter.setBrush(QBrush(QColor("#5c9eff")))
+			painter.drawEllipse(QPointF(x, y_b), 4, 4)
+			
+			painter.setBrush(QBrush(QColor("#e91e63")))
+			painter.drawEllipse(QPointF(x, y_w), 4, 4)
+
+
+class HistoryDialog(QDialog):
+	def __init__(self, parent=None, card_type_mode="hanzi-define"):
+		super().__init__(parent)
+		self.setWindowTitle("Comprehension History")
+		self.resize(1000, 600)
+		self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinMaxButtonsHint)
+		
+		self.card_type_mode = card_type_mode
+		
+		layout = QVBoxLayout()
+		self.setLayout(layout)
+		
+		self.lbl_status = QLabel("Loading history... (this may take a moment)")
+		self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		layout.addWidget(self.lbl_status)
+		
+		self.graph = HistoryGraph()
+		self.graph.setVisible(False)
+		layout.addWidget(self.graph)
+		
+		self.close_btn = QPushButton("Close")
+		self.close_btn.clicked.connect(self.accept)
+		layout.addWidget(self.close_btn)
+		
+		QTimer.singleShot(100, self.calculate_history)
+
+	def calculate_history(self):
+		col = mw.col
+		
+		# Build mappings: CID -> Word, Word -> Weight
+		cid_to_word = {}
+		word_weights = {} # word -> weight
+		active_cids = set() # currently active (not suspended)
+		
+		note_ids = col.find_notes("note:chinese-word")
+		
+		# Get card ord for the requested type
+		# hanzi-define is usually ord 0 or 1 depending on template
+		# But searching by card:hanzi-define is safer if we want CIDs
+		# However, here we iterate notes. Let's find the correct ordinal.
+		model = col.models.by_name("Chinese Words") 
+		if not model:
+			# Fallback if model name different, try query approach
+			# This is slower but safer
+			pass
+			
+		target_ords = []
+		if model:
+			for tmpl in model['tmpls']:
+				if tmpl['name'] == self.card_type_mode:
+					target_ords.append(tmpl['ord'])
+		
+		target_ord = target_ords[0] if target_ords else 0
+
+		for nid in note_ids:
+			note = col.get_note(nid)
+			w = note['word']
+			weight = get_frequency_weight(w)
+			if weight:
+				word_weights[w] = weight
+				for card in note.cards():
+					if card.ord == target_ord:
+						cid_to_word[card.id] = w
+						if card.queue != -1:
+							active_cids.add(card.id)
+					
+		total_mass = get_total_frequency_mass()
+		if not total_mass:
+			self.lbl_status.setText("No frequency data available.")
+			return
+
+		# Fetch simplified review log: id, cid, ivl
+		raw_reviews = col.db.all("SELECT id, cid, ivl FROM revlog ORDER BY id")
+		
+		# Filter for relevant reviews and determine start date
+		relevant_reviews = []
+		for r in raw_reviews:
+			if r[1] in cid_to_word:
+				relevant_reviews.append(r)
+				
+		if not relevant_reviews:
+			self.lbl_status.setText("No Chinese reviews found.")
+			return
+
+		first_ts = relevant_reviews[0][0]
+		start_day_idx = first_ts // 86400000
+		
+		# Simulation State
+		# word_states: word -> { cid -> { 'ivl': int, 'last_seen': day_idx } }
+		word_states = {}
+		
+		history_points = []
+		
+		rev_cursor = 0
+		num_reviews = len(relevant_reviews)
+		
+		now_ts = int(time.time() * 1000)
+		end_day_idx = now_ts // 86400000
+		
+		# Iterate days
+		for day_idx in range(start_day_idx, end_day_idx + 1):
+			day_limit_ms = (day_idx + 1) * 86400000
+			
+			# Process reviews for this day
+			while rev_cursor < num_reviews:
+				rid, cid, ivl = relevant_reviews[rev_cursor]
+				if rid >= day_limit_ms:
+					break
+				
+				rev_cursor += 1
+				
+				w = cid_to_word[cid]
+				if w not in word_states:
+					word_states[w] = {}
+				
+				# Logic:
+				# ivl >= 1: Card is known/reviewing
+				# ivl < 1: Card is in learning or re-learning (lapse)
+				
+				if ivl >= 1:
+					word_states[w][cid] = {'ivl': ivl, 'last_seen': day_idx}
+				else:
+					# Card lapsed or is learning.
+					if cid in word_states[w]:
+						del word_states[w][cid]
+						if not word_states[w]:
+							del word_states[w]
+			
+			# Calculate Daily Stats
+			day_basic_active_mass = 0.0
+			day_weighted_active_mass = 0.0
+			day_weighted_all_mass = 0.0
+			
+			# We only sum up words that have at least one valid card state
+			for w, cards in word_states.items():
+				if not cards: 
+					continue
+					
+				w_mass = word_weights[w]
+				
+				# Check if active
+				has_active = any(cid in active_cids for cid in cards)
+				
+				if has_active:
+					day_basic_active_mass += w_mass
+				
+				# Retrievabilities
+				max_r_active = 0.0
+				max_r_all = 0.0
+				
+				for cid, c_state in cards.items():
+					ivl = c_state['ivl']
+					last_seen = c_state['last_seen']
+					
+					elapsed = day_idx - last_seen
+					r_val = 0.0
+					if ivl > 0:
+						r_val = 0.9 ** (elapsed / float(ivl))
+					
+					if r_val > max_r_all:
+						max_r_all = r_val
+						
+					if cid in active_cids:
+						if r_val > max_r_active:
+							max_r_active = r_val
+				
+				day_weighted_active_mass += w_mass * max_r_active
+				day_weighted_all_mass += w_mass * max_r_all
+
+			basic_pct = min(100.0, (day_basic_active_mass / total_mass) * 100)
+			weighted_active_pct = min(100.0, (day_weighted_active_mass / total_mass) * 100)
+			weighted_all_pct = min(100.0, (day_weighted_all_mass / total_mass) * 100)
+			
+			ts_display = day_idx * 86400 + 43200
+			history_points.append((ts_display, basic_pct, weighted_active_pct, weighted_all_pct))
+			
+		self.graph.set_data(history_points)
+		self.graph.setVisible(True)
+		self.lbl_status.setVisible(False)
+
+
 class ChineseInfoDialog(QDialog):
 	def __init__(self, parent=None):
 		super().__init__(parent)
@@ -368,6 +728,10 @@ class ChineseInfoDialog(QDialog):
 		btn_new.clicked.connect(self.open_new_words)
 		controls_layout.addWidget(btn_new)
 
+		btn_hist = QPushButton("View History")
+		btn_hist.clicked.connect(self.open_history)
+		controls_layout.addWidget(btn_hist)
+
 		self.lbl_bucket = QLabel("Bucket Size:")
 		controls_layout.addWidget(self.lbl_bucket)
 		self.spin_bucket = QSpinBox()
@@ -385,6 +749,15 @@ class ChineseInfoDialog(QDialog):
 		self.spin_max_rank.setValue(init_max_rank)
 		self.spin_max_rank.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_max_rank)
+		
+		self.lbl_sim = QLabel("Simulate New:")
+		controls_layout.addWidget(self.lbl_sim)
+		self.spin_sim = QSpinBox()
+		self.spin_sim.setRange(0, 5000)
+		self.spin_sim.setSingleStep(50)
+		self.spin_sim.setValue(0)
+		self.spin_sim.valueChanged.connect(self.schedule_refresh)
+		controls_layout.addWidget(self.spin_sim)
 
 		layout.addLayout(controls_layout)
 
@@ -410,6 +783,12 @@ class ChineseInfoDialog(QDialog):
 		dlg = NewWordsDialog(self)
 		dlg.exec()
 
+	def open_history(self):
+		use_pronounce = self.check_pronounce.isChecked()
+		card_type_mode = "hanzi-pronounce" if use_pronounce else "hanzi-define"
+		dlg = HistoryDialog(self, card_type_mode)
+		dlg.exec()
+
 	def schedule_refresh(self):
 		self.debounce_timer.start()
 
@@ -421,11 +800,14 @@ class ChineseInfoDialog(QDialog):
 		show_hsk = self.check_hsk.isChecked()
 		bucket_size = self.spin_bucket.value()
 		max_rank_cutoff = self.spin_max_rank.value()
+		sim_new_count = self.spin_sim.value()
 
 		self.spin_bucket.setVisible(not show_hsk)
 		self.spin_max_rank.setVisible(not show_hsk)
 		self.lbl_bucket.setVisible(not show_hsk)
 		self.lbl_rank.setVisible(not show_hsk)
+		# Simulation only makes sense in Frequency Rank mode usually, but can work for HSK too
+
 
 		hsk_totals = {}
 		if show_hsk:
@@ -465,27 +847,46 @@ class ChineseInfoDialog(QDialog):
 		def get_mass(w):
 			val = get_frequency_weight(w)
 			if val is None: return 0.0
-			# Enforce minimum weight to ensure visibility in UI
 			return max(val, 1e-9)
+
+		# Simulate learning new words
+		simulated_words = set()
+		if sim_new_count > 0:
+			all_sorted_words = get_all_words()
+			count_added = 0
+			for w_sim in all_sorted_words:
+				if count_added >= sim_new_count:
+					break
+				if w_sim not in known and w_sim not in unreviewed_words:
+					simulated_words.add(w_sim)
+					count_added += 1
 
 		total_mass = get_total_frequency_mass()
 		basic_mass = sum(get_mass(w) for w in known)
+		sim_mass = sum(get_mass(w) for w in simulated_words)
+		
+		# Assume simulated words are known with retrievability 0.9 (freshly learned)
 		retrieval_mass = sum(get_mass(w) * (d['r'] or 0) for w, d in known.items())
+		retrieval_mass_sim = retrieval_mass + (sim_mass * 0.9)
 
 		basic_perc = (basic_mass / total_mass * 100) if total_mass else 0
+		basic_perc_w_sim = ((basic_mass + sim_mass) / total_mass * 100) if total_mass else 0
+		
 		retrieval_perc = (retrieval_mass / total_mass * 100) if total_mass else 0
+		retrieval_perc_sim = (retrieval_mass_sim / total_mass * 100) if total_mass else 0
 
 		max_rank_found = 0
 		
 		bucket_counts = {}
 		unreviewed_bucket_counts = {}
+		simulated_bucket_counts = {}  
 		
 		# bucket stats: idx -> {stats}
 		bucket_stats = {} 
 		
 		def get_bucket_stats(idx):
 			if idx not in bucket_stats:
-				bucket_stats[idx] = {'sum_r': 0.0, 'sum_s': 0.0, 'count_known': 0, 'mass_known': 0.0, 'mass_total': 0.0}
+				bucket_stats[idx] = {'sum_r': 0.0, 'sum_s': 0.0, 'count_known': 0, 'mass_known': 0.0, 'mass_total': 0.0, 'mass_sim': 0.0}
 			return bucket_stats[idx]
 
 		if show_hsk:
@@ -514,6 +915,17 @@ class ChineseInfoDialog(QDialog):
 						unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
 						
 						w_mass = get_mass(word)
+						s['mass_total'] += w_mass
+
+			if simulated_words:
+				for word in simulated_words:
+					lvl = get_hsk_level(word)
+					if lvl and 1 <= lvl <= 6:
+						b_idx = lvl - 1
+						s = get_bucket_stats(b_idx)
+						simulated_bucket_counts[b_idx] = simulated_bucket_counts.get(b_idx, 0) + 1
+						w_mass = get_mass(word)
+						s['mass_sim'] += w_mass
 						s['mass_total'] += w_mass
 			
 			total_buckets_needed = 6
@@ -550,10 +962,23 @@ class ChineseInfoDialog(QDialog):
 							w_mass = get_mass(word)
 							s['mass_total'] += w_mass
 			
+			if simulated_words:
+				for word in simulated_words:
+					rank = get_frequency_rank(word)
+					if rank:
+						if rank <= max_rank_cutoff:
+							b_idx = (rank - 1) // bucket_size
+							s = get_bucket_stats(b_idx)
+							simulated_bucket_counts[b_idx] = simulated_bucket_counts.get(b_idx, 0) + 1
+							w_mass = get_mass(word)
+							s['mass_sim'] += w_mass
+							s['mass_total'] += w_mass
+
 			total_buckets_needed = max_rank_cutoff // bucket_size
 		
 		data_list = [0] * total_buckets_needed
 		unrev_list = [0] * total_buckets_needed
+		sim_list = [0] * total_buckets_needed
 		stats_list = []
 
 		for idx in range(total_buckets_needed):
@@ -563,29 +988,42 @@ class ChineseInfoDialog(QDialog):
 			unrev = unreviewed_bucket_counts.get(idx, 0)
 			if show_unreviewed:
 				unrev_list[idx] = unrev
+				
+			sim = simulated_bucket_counts.get(idx, 0)
+			sim_list[idx] = sim
 			
-			s = bucket_stats.get(idx, {'sum_r':0, 'sum_s':0, 'count_known':0, 'mass_known':0, 'mass_total':0})
+			s = bucket_stats.get(idx, {'sum_r':0, 'sum_s':0, 'count_known':0, 'mass_known':0, 'mass_total':0, 'mass_sim':0})
 			c_known = s['count_known']
 			avg_r = (s['sum_r'] / c_known) if c_known else 0
 			avg_s = (s['sum_s'] / c_known) if c_known else 0
 			cov_k = (s['mass_known'] / total_mass * 100) if total_mass else 0
 			cov_t = (s['mass_total'] / total_mass * 100) if total_mass else 0
+			cov_sim = (s['mass_sim'] / total_mass * 100) if total_mass else 0
 			
 			stats_list.append({
 				'avg_retrievability': avg_r, 
 				'avg_stability': avg_s,
 				'coverage_known': cov_k,
-				'coverage_total': cov_t
+				'coverage_total': cov_t,
+				'coverage_sim': cov_sim
 			})
 		
-		self.graph.set_data(data_list, unrev_list if show_unreviewed else None, stats_list)
+		self.graph.set_data(data_list, unrev_list if show_unreviewed else None, sim_list, stats_list)
 		
 		info_text = (
 			f"<h3>Stats for '{card_type}'</h3>"
-			f"Basic estimated comprehension: <b>{basic_perc:.4f}%</b><br>"
-			f"Retrievability-weighted: <b>{retrieval_perc:.4f}%</b><br>"
-			f"Based on <b>{len(known)}</b> words<br>"
+			f"Basic estimated comprehension: <b>{basic_perc:.4f}%</b>"
 		)
+		
+		if sim_new_count > 0:
+			info_text += f" <span style='color:#9c27b0'>(+{basic_perc_w_sim - basic_perc:.4f}% -> {basic_perc_w_sim:.4f}%)</span>"
+			
+		info_text += f"<br>Retrievability-weighted: <b>{retrieval_perc:.4f}%</b>"
+		
+		if sim_new_count > 0:
+			info_text += f" <span style='color:#9c27b0'>(+{retrieval_perc_sim - retrieval_perc:.4f}% -> {retrieval_perc_sim:.4f}%)</span>"
+			
+		info_text += f"<br>Based on <b>{len(known)}</b> words (+{len(simulated_words)} simulated)<br>"
 
 		today_val = self._calc_todays_gain()
 		
