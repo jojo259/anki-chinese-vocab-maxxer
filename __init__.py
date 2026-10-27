@@ -549,37 +549,17 @@ class HistoryDialog(QDialog):
 		word_weights = {} # word -> weight
 		active_cids = set() # currently active (not suspended)
 		
-		note_ids = col.find_notes("note:chinese-word")
-		
-		# Get card ord for the requested type
-		# hanzi-define is usually ord 0 or 1 depending on template
-		# But searching by card:hanzi-define is safer if we want CIDs
-		# However, here we iterate notes. Let's find the correct ordinal.
-		model = col.models.by_name("Chinese Words") 
-		if not model:
-			# Fallback if model name different, try query approach
-			# This is slower but safer
-			pass
-			
-		target_ords = []
-		if model:
-			for tmpl in model['tmpls']:
-				if tmpl['name'] == self.card_type_mode:
-					target_ords.append(tmpl['ord'])
-		
-		target_ord = target_ords[0] if target_ords else 0
-
-		for nid in note_ids:
-			note = col.get_note(nid)
+		query = f"note:chinese-word card:{self.card_type_mode}"
+		for cid in col.find_cards(query):
+			card = col.get_card(cid)
+			note = card.note()
 			w = note['word']
 			weight = get_frequency_weight(w)
 			if weight:
 				word_weights[w] = weight
-				for card in note.cards():
-					if card.ord == target_ord:
-						cid_to_word[card.id] = w
-						if card.queue != -1:
-							active_cids.add(card.id)
+				cid_to_word[card.id] = w
+				if card.queue != -1:
+					active_cids.add(card.id)
 					
 		total_mass = get_total_frequency_mass()
 		if not total_mass:
