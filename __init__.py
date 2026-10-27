@@ -929,7 +929,6 @@ class ChineseInfoDialog(QDialog):
 						simulated_bucket_counts[b_idx] = simulated_bucket_counts.get(b_idx, 0) + 1
 						w_mass = get_mass(word)
 						s['mass_sim'] += w_mass
-						s['mass_total'] += w_mass
 			
 			total_buckets_needed = 6
 			
@@ -977,7 +976,6 @@ class ChineseInfoDialog(QDialog):
 							simulated_bucket_counts[b_idx] = simulated_bucket_counts.get(b_idx, 0) + 1
 							w_mass = get_mass(word)
 							s['mass_sim'] += w_mass
-							s['mass_total'] += w_mass
 
 			total_buckets_needed = max_rank_cutoff // bucket_size
 		
