@@ -1106,7 +1106,7 @@ def on_card_reviewed(reviewer, card, ease):
 
 def readable_number(x):
 	if x > 1_000_000_000:
-		return f'{round(x / 1_000_000)}bil'
+		return f'{round(x / 1_000_000_000)}bil'
 	if x > 1_000_000:
 		return f'{round(x / 1_000_000)}mil'
 	if x > 1_000:
