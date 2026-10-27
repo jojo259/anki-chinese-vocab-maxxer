@@ -132,9 +132,9 @@ class FrequencyGraph(QWidget):
 					f"Including Unreviewed: {count + unrev_count} ({pct_total:.1f}%)<br>"
 					f"Avg Retrievability: {avg_r:.1f}%<br>"
 					f"Avg Stability: {avg_s:.1f} days<br>"
-					f"Coverage (Known): +{cov_k:.6f}%<br>"
-					f"Coverage (Known + New): +{cov_t:.6f}%<br>"
-					f"Simulated Gain: +{stats.get('coverage_sim', 0):.6f}%"
+					f"Coverage (Known): +{cov_k:.3g}%<br>"
+					f"Coverage (Known + New): +{cov_t:.3g}%<br>"
+					f"Simulated Gain: +{stats.get('coverage_sim', 0):.3g}%"
 				)
 				break
 		
@@ -818,16 +818,14 @@ class ChineseInfoDialog(QDialog):
 			if previous is None or (r, s) > (previous['r'], previous['s']):
 				known[word] = {'r': r, 's': s}
 
-		# Gather unreviewed words if needed
+		# Gather unreviewed words independently of graph visibility.
 		unreviewed_words = set()
-		if show_unreviewed:
-			# Get all words from base query
-			for cid in col.find_cards(query_base):
-				card = col.get_card(cid)
-				note = card.note()
-				w = note['word']
-				if w not in known:
-					unreviewed_words.add(w)
+		for cid in col.find_cards(query_base):
+			card = col.get_card(cid)
+			note = card.note()
+			w = note['word']
+			if w not in known:
+				unreviewed_words.add(w)
 
 		def get_mass(w):
 			val = get_frequency_weight(w)
@@ -891,18 +889,17 @@ class ChineseInfoDialog(QDialog):
 					s['mass_known'] += w_mass
 					s['mass_total'] += w_mass
 
-			if show_unreviewed:
-				for word in unreviewed_words:
-					lvl = get_hsk_level(word)
-					if lvl and 1 <= lvl <= 6:
-						b_idx = lvl - 1
-						s = get_bucket_stats(b_idx)
-						s['count_unreviewed'] = s.get('count_unreviewed', 0) + 1
-						if word not in simulated_words:
-							unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
-						
-						w_mass = get_mass(word)
-						s['mass_total'] += w_mass
+			for word in unreviewed_words:
+				lvl = get_hsk_level(word)
+				if lvl and 1 <= lvl <= 6:
+					b_idx = lvl - 1
+					s = get_bucket_stats(b_idx)
+					s['count_unreviewed'] = s.get('count_unreviewed', 0) + 1
+					if word not in simulated_words:
+						unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
+
+					w_mass = get_mass(word)
+					s['mass_total'] += w_mass
 
 			if simulated_words:
 				for word in simulated_words:
@@ -935,20 +932,19 @@ class ChineseInfoDialog(QDialog):
 						s['mass_known'] += w_mass
 						s['mass_total'] += w_mass
 
-			if show_unreviewed:
-				for word in unreviewed_words:
-					rank = get_frequency_rank(word)
-					if rank:
-						max_rank_found = max(max_rank_found, rank)
-						if rank <= max_rank_cutoff:
-							b_idx = (rank - 1) // bucket_size
-							s = get_bucket_stats(b_idx)
-							s['count_unreviewed'] = s.get('count_unreviewed', 0) + 1
-							if word not in simulated_words:
-								unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
-							
-							w_mass = get_mass(word)
-							s['mass_total'] += w_mass
+			for word in unreviewed_words:
+				rank = get_frequency_rank(word)
+				if rank:
+					max_rank_found = max(max_rank_found, rank)
+					if rank <= max_rank_cutoff:
+						b_idx = (rank - 1) // bucket_size
+						s = get_bucket_stats(b_idx)
+						s['count_unreviewed'] = s.get('count_unreviewed', 0) + 1
+						if word not in simulated_words:
+							unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
+
+						w_mass = get_mass(word)
+						s['mass_total'] += w_mass
 			
 			if simulated_words:
 				for word in simulated_words:
