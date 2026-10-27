@@ -681,6 +681,7 @@ class ChineseInfoDialog(QDialog):
 		super().__init__(parent)
 		self.setWindowTitle("Chinese Words Info")
 		self.resize(1000, 600)
+		self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinMaxButtonsHint)
 		
 		config = mw.addonManager.getConfig(__name__) or {}
 		init_bucket_size = config.get('graph_bucket_size', 100)
