@@ -103,6 +103,8 @@ class FrequencyGraph(QWidget):
 				unrev_count = 0
 				if idx < len(self.unreviewed_counts):
 					unrev_count = self.unreviewed_counts[idx]
+				stats = self.bucket_stats_list[idx] if idx < len(self.bucket_stats_list) else {}
+				unrev_count = stats.get('count_unreviewed', unrev_count)
 				
 				if self.hsk_mode:
 					label = f"HSK {idx + 1}"
@@ -118,7 +120,6 @@ class FrequencyGraph(QWidget):
 				pct_known = (count / total_in_bucket) * 100.0
 				pct_total = ((count + unrev_count) / total_in_bucket) * 100.0
 				
-				stats = self.bucket_stats_list[idx] if idx < len(self.bucket_stats_list) else {}
 				avg_r = stats.get('avg_retrievability', 0)
 				avg_s = stats.get('avg_stability', 0)
 				
@@ -222,11 +223,11 @@ class FrequencyGraph(QWidget):
 			
 			if h_unrev > 0:
 				painter.setBrush(QBrush(QColor("#f2c94c")))
-				rect_unrev = QRectF(x, y_unrev, bar_width, h_unrev)
+				rect_unrev = QRectF(x, y_unrev - h_sim, bar_width, h_unrev)
 				painter.drawRect(rect_unrev)
 
 			if h_sim > 0:
-				y_sim = y_unrev - h_sim
+				y_sim = y_known - h_sim
 				painter.setBrush(QBrush(QColor("#9c27b0"))) # Purple for simulated
 				rect_sim = QRectF(x, y_sim, bar_width, h_sim)
 				painter.drawRect(rect_sim)
@@ -857,7 +858,7 @@ class ChineseInfoDialog(QDialog):
 			for w_sim in all_sorted_words:
 				if count_added >= sim_new_count:
 					break
-				if w_sim not in known and w_sim not in unreviewed_words:
+				if w_sim not in known:
 					simulated_words.add(w_sim)
 					count_added += 1
 
@@ -912,7 +913,9 @@ class ChineseInfoDialog(QDialog):
 					if lvl and 1 <= lvl <= 6:
 						b_idx = lvl - 1
 						s = get_bucket_stats(b_idx)
-						unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
+						s['count_unreviewed'] = s.get('count_unreviewed', 0) + 1
+						if word not in simulated_words:
+							unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
 						
 						w_mass = get_mass(word)
 						s['mass_total'] += w_mass
@@ -957,7 +960,9 @@ class ChineseInfoDialog(QDialog):
 						if rank <= max_rank_cutoff:
 							b_idx = (rank - 1) // bucket_size
 							s = get_bucket_stats(b_idx)
-							unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
+							s['count_unreviewed'] = s.get('count_unreviewed', 0) + 1
+							if word not in simulated_words:
+								unreviewed_bucket_counts[b_idx] = unreviewed_bucket_counts.get(b_idx, 0) + 1
 							
 							w_mass = get_mass(word)
 							s['mass_total'] += w_mass
@@ -1001,6 +1006,7 @@ class ChineseInfoDialog(QDialog):
 			cov_sim = (s['mass_sim'] / total_mass * 100) if total_mass else 0
 			
 			stats_list.append({
+				'count_unreviewed': s.get('count_unreviewed', 0),
 				'avg_retrievability': avg_r, 
 				'avg_stability': avg_s,
 				'coverage_known': cov_k,
