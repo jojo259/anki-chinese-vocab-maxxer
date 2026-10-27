@@ -57,7 +57,7 @@ import time
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
-	QPainterPath, QPointF, QLinearGradient
+	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy
 )
 
 class FrequencyGraph(QWidget):
@@ -670,30 +670,39 @@ class ChineseInfoDialog(QDialog):
 		self.setLayout(layout)
 
 		controls_layout = QHBoxLayout()
-		
-		self.check_pronounce = QCheckBox("Switch to 'Pronounce' cards (default: 'Define')")
-		self.check_pronounce.stateChanged.connect(self.refresh_stats)
-		controls_layout.addWidget(self.check_pronounce)
-		
-		self.check_unreviewed = QCheckBox("Show unreviewed added cards")
-		self.check_unreviewed.stateChanged.connect(self.refresh_stats)
-		controls_layout.addWidget(self.check_unreviewed)
-
-		self.check_hsk = QCheckBox("Group by HSK Levels")
-		self.check_hsk.stateChanged.connect(self.refresh_stats)
-		controls_layout.addWidget(self.check_hsk)
-		
-		controls_layout.addStretch()
-		
+		layout.setContentsMargins(16, 16, 16, 16)
+		layout.setSpacing(20)
 		btn_new = QPushButton("View Top New Words")
 		btn_new.clicked.connect(self.open_new_words)
 		controls_layout.addWidget(btn_new)
 
-		btn_hist = QPushButton("View History")
+		btn_hist = QPushButton("History Graph")
 		btn_hist.clicked.connect(self.open_history)
 		controls_layout.addWidget(btn_hist)
+		controls_layout.addStretch()
+		layout.addLayout(controls_layout)
 
-		self.lbl_bucket = QLabel("Bucket Size:")
+		controls_layout = QHBoxLayout()
+		controls_layout.addWidget(QLabel("Card type"))
+		self.combo_card_type = QComboBox()
+		self.combo_card_type.addItems(["Define", "Pronounce"])
+		self.combo_card_type.currentIndexChanged.connect(self.refresh_stats)
+		controls_layout.addWidget(self.combo_card_type)
+		controls_layout.addSpacing(12)
+		controls_layout.addWidget(QLabel("Group by"))
+		self.combo_group = QComboBox()
+		self.combo_group.addItems(["Frequency", "HSK level"])
+		self.combo_group.currentIndexChanged.connect(self.refresh_stats)
+		controls_layout.addWidget(self.combo_group)
+		controls_layout.addSpacing(12)
+		self.check_unreviewed = QCheckBox("Show unreviewed")
+		self.check_unreviewed.stateChanged.connect(self.refresh_stats)
+		controls_layout.addWidget(self.check_unreviewed)
+		controls_layout.addStretch()
+		layout.addLayout(controls_layout)
+
+		controls_layout = QHBoxLayout()
+		self.lbl_bucket = QLabel("Bucket size")
 		controls_layout.addWidget(self.lbl_bucket)
 		self.spin_bucket = QSpinBox()
 		self.spin_bucket.setRange(10, 5000)
@@ -702,7 +711,7 @@ class ChineseInfoDialog(QDialog):
 		self.spin_bucket.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_bucket)
 
-		self.lbl_rank = QLabel("Max Rank:")
+		self.lbl_rank = QLabel("Max rank")
 		controls_layout.addWidget(self.lbl_rank)
 		self.spin_max_rank = QSpinBox()
 		self.spin_max_rank.setRange(100, 1000000)
@@ -711,7 +720,7 @@ class ChineseInfoDialog(QDialog):
 		self.spin_max_rank.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_max_rank)
 		
-		self.lbl_sim = QLabel("Simulate New:")
+		self.lbl_sim = QLabel("Simulate words")
 		controls_layout.addWidget(self.lbl_sim)
 		self.spin_sim = QSpinBox()
 		self.spin_sim.setRange(0, 5000)
@@ -719,19 +728,26 @@ class ChineseInfoDialog(QDialog):
 		self.spin_sim.setValue(0)
 		self.spin_sim.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_sim)
-
+		for spin in (self.spin_bucket, self.spin_max_rank, self.spin_sim):
+			spin.setGroupSeparatorShown(True)
+		input_width = self.spin_max_rank.sizeHint().width()
+		for spin in (self.spin_bucket, self.spin_max_rank, self.spin_sim):
+			spin.setFixedWidth(input_width)
+		controls_layout.addStretch()
 		layout.addLayout(controls_layout)
 
 		self.stats_label = QLabel("Calculating...")
 		self.stats_label.setTextFormat(Qt.TextFormat.RichText)
+		self.stats_label.setWordWrap(True)
+		self.stats_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 		layout.addWidget(self.stats_label)
 
 		self.graph = FrequencyGraph()
-		layout.addWidget(self.graph)
+		layout.addWidget(self.graph, 1)
 
 		close_btn = QPushButton("Close")
 		close_btn.clicked.connect(self.accept)
-		layout.addWidget(close_btn)
+		layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
 		
 		self.debounce_timer = QTimer()
 		self.debounce_timer.setSingleShot(True)
@@ -745,7 +761,7 @@ class ChineseInfoDialog(QDialog):
 		dlg.exec()
 
 	def open_history(self):
-		use_pronounce = self.check_pronounce.isChecked()
+		use_pronounce = self.combo_card_type.currentIndex() == 1
 		card_type_mode = "hanzi-pronounce" if use_pronounce else "hanzi-define"
 		dlg = HistoryDialog(self, card_type_mode)
 		dlg.exec()
@@ -756,9 +772,9 @@ class ChineseInfoDialog(QDialog):
 	def refresh_stats(self):
 		self.debounce_timer.stop()
 		col = mw.col
-		use_pronounce = self.check_pronounce.isChecked()
+		use_pronounce = self.combo_card_type.currentIndex() == 1
 		show_unreviewed = self.check_unreviewed.isChecked()
-		show_hsk = self.check_hsk.isChecked()
+		show_hsk = self.combo_group.currentIndex() == 1
 		bucket_size = self.spin_bucket.value()
 		max_rank_cutoff = self.spin_max_rank.value()
 		sim_new_count = self.spin_sim.value()
@@ -974,28 +990,22 @@ class ChineseInfoDialog(QDialog):
 		
 		self.graph.set_data(data_list, unrev_list if show_unreviewed else None, sim_list, stats_list)
 		
-		info_text = (
-			f"<h3>Stats for '{card_type}'</h3>"
-			f"Basic estimated comprehension: <b>{basic_perc:.4f}%</b>"
-		)
-		
-		if sim_new_count > 0:
-			info_text += f" <span style='color:#9c27b0'>(+{basic_perc_w_sim - basic_perc:.4f}% -> {basic_perc_w_sim:.4f}%)</span>"
-			
-		info_text += f"<br>Retrievability-weighted: <b>{retrieval_perc:.4f}%</b>"
-		
-		if sim_new_count > 0:
-			info_text += f" <span style='color:#9c27b0'>(+{retrieval_perc_sim - retrieval_perc:.4f}% -> {retrieval_perc_sim:.4f}%)</span>"
-			
-		info_text += f"<br>Based on <b>{len(known)}</b> words (+{len(simulated_words)} simulated)<br>"
-
 		today_val = self._calc_todays_gain()
-		
-		info_text += f"Today's Net Interval Gain: <b>{today_val:+.0f} days</b><br>"
-		
+		labels = ("Frequency coverage", "Recall-weighted", "Words studied", "Today's interval gain")
+		values = (f"{basic_perc:.3g}%", f"{retrieval_perc:.3g}%", f"{len(known):,}", f"{today_val:+,.0f} days")
+		rows = [labels, tuple(f"<span style='font-size:large'>{value}</span>" for value in values)]
+		if sim_new_count > 0:
+			rows.append((
+				f"+{basic_perc_w_sim - basic_perc:.3g}% → {basic_perc_w_sim:.3g}%",
+				f"+{retrieval_perc_sim - retrieval_perc:.3g}% → {retrieval_perc_sim:.3g}%",
+				f"+{len(simulated_words):,} simulated", "",
+			))
+		info_text = "<table width='100%' cellspacing='0' cellpadding='0'>"
+		for row in rows:
+			info_text += "<tr>" + "".join(f"<td width='25%'>{cell}</td>" for cell in row) + "</tr>"
+		info_text += "</table>"
 		if not show_hsk:
-			info_text += f"Highest Rank Found: {max_rank_found} (Graph limited to {max_rank_cutoff})"
-			
+			info_text += f"<p style='margin-top:6px; margin-bottom:0'>Highest rank: {max_rank_found:,} · Graph limit: {max_rank_cutoff:,}</p>"
 		self.stats_label.setText(info_text)
 
 	def _calc_todays_gain(self):
