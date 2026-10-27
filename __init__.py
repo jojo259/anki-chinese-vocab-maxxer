@@ -832,7 +832,11 @@ class ChineseInfoDialog(QDialog):
 			s = 0.0
 			if getattr(card, 'memory_state', None):
 				s = card.memory_state.stability
-			known[note['word']] = {'r': r, 's': s}
+			word = note['word']
+			previous = known.get(word)
+			# Keep the strongest recall; break ties using stability.
+			if previous is None or (r, s) > (previous['r'], previous['s']):
+				known[word] = {'r': r, 's': s}
 
 		# Gather unreviewed words if needed
 		unreviewed_words = set()
