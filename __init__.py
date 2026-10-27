@@ -73,7 +73,7 @@ class FrequencyGraph(QWidget):
 		self.hsk_mode = False
 		self.hsk_totals = {}
 		self.bar_rects = [] # (rect, bucket_index)
-		self.setMinimumHeight(200)
+		self.setMinimumHeight(260)
 
 	def set_config(self, bucket_size, max_rank):
 		self.bucket_size = bucket_size
@@ -146,126 +146,105 @@ class FrequencyGraph(QWidget):
 	def paintEvent(self, event):
 		painter = QPainter(self)
 		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-		
 		w = self.width()
 		h = self.height()
-		
-		margin_left = 60
-		margin_bottom = 40
-		graph_w = w - margin_left
-		graph_h = h - margin_bottom
+		fm = painter.fontMetrics()
+		line_h = fm.height()
+		padding = 12
+		palette = self.palette()
+		background = palette.window().color()
+		text_color = palette.windowText().color()
+		dark = background.lightness() < 128
+		plot_color = background.darker(110 if dark else 103)
+		grid_color = QColor(text_color)
+		grid_color.setAlpha(32)
+		studied_color = QColor("#5c9eff")
+		unreviewed_color = QColor("#f2c94c")
+		simulated_color = QColor("#b05ac3" if dark else "#9c27b0")
+		painter.fillRect(self.rect(), background)
+		painter.setPen(text_color)
+		title = "Words by HSK level" if self.hsk_mode else "Words by frequency"
+		painter.drawText(padding, padding + fm.ascent(), title)
 
-		painter.fillRect(0, 0, w, h, QColor("#f0f0f0"))
-		
-		self.bar_rects = [] # Clear previous rects
+		legend_x = padding
+		legend_y = padding + line_h + 10
+		for label, color in (("Studied", studied_color), ("Unreviewed", unreviewed_color), ("Simulated", simulated_color)):
+			entry_w = 16 + fm.horizontalAdvance(label)
+			if legend_x > padding and legend_x + entry_w > w - padding:
+				legend_x = padding
+				legend_y += line_h + 6
+			painter.fillRect(QRectF(legend_x, legend_y + (line_h - 10) / 2, 10, 10), color)
+			painter.drawText(legend_x + 16, legend_y + fm.ascent(), label)
+			legend_x += entry_w + 22
 
-		if not self.bucket_counts:
+		left = max(58, fm.horizontalAdvance("100%") + 20)
+		top = legend_y + line_h * 2 + 18
+		bottom = h - line_h * 2 - padding - 14
+		graph_w = w - left - padding
+		graph_h = bottom - top
+		self.bar_rects = []
+		if graph_w <= 0 or graph_h <= 0:
 			return
-
-		max_y_val = 100.0
+		plot_rect = QRectF(left, top, graph_w, graph_h)
+		painter.fillRect(plot_rect, plot_color)
+		painter.drawText(left, top - 12, "Studied words (%)")
+		for value in (0, 25, 50, 75, 100):
+			y = top + graph_h * (1 - value / 100)
+			painter.setPen(QPen(grid_color, 1))
+			painter.drawLine(QPointF(left, y), QPointF(left + graph_w, y))
+			painter.setPen(text_color)
+			label = f"{value}%"
+			painter.drawText(left - 10 - fm.horizontalAdvance(label), int(y + (fm.ascent() - fm.descent()) / 2), label)
 
 		num_buckets = len(self.bucket_counts)
-		
-		if num_buckets == 0:
+		if not num_buckets:
 			return
-
 		bar_width = graph_w / num_buckets
-
-		pen = QPen(Qt.GlobalColor.black, 1)
-		painter.setPen(pen)
-		painter.drawLine(margin_left, 0, margin_left, int(h - margin_bottom))
-		painter.drawLine(margin_left, int(h - margin_bottom), w, int(h - margin_bottom))
-
-		painter.setPen(Qt.PenStyle.NoPen)
-		
-		has_unreviewed = len(self.unreviewed_counts) == len(self.bucket_counts)
-
-		for i, count in enumerate(self.bucket_counts):
-			if self.hsk_mode:
-				total_in_bucket = self.hsk_totals.get(i + 1, 1)
-			else:
-				total_in_bucket = self.bucket_size
-
-			total_in_bucket = max(1, total_in_bucket)
-
-			pct_known = (count / total_in_bucket) * 100.0
-			
-			pct_unreviewed = 0.0
-			if has_unreviewed:
-				pct_unreviewed = (self.unreviewed_counts[i] / total_in_bucket) * 100.0
-			
-			total_pct = min(pct_known + pct_unreviewed, 100.0)
-			
-			x = margin_left + i * bar_width
-			
-			h_known = (pct_known / max_y_val) * graph_h
-			y_known = h - margin_bottom - h_known
-			
-			h_unrev = (pct_unreviewed / max_y_val) * graph_h
-			y_unrev = y_known - h_unrev
-			
-			painter.setBrush(QBrush(QColor("#5c9eff")))
-			rect_known = QRectF(x, y_known, bar_width, h_known)
-			painter.drawRect(rect_known)
-			
-			# Store rect for tooltip (full bar height from bottom)
-			full_height = h_known + h_unrev
-			
-			pct_sim = 0.0
-			h_sim = 0.0
-			if i < len(self.simulated_counts):
-				pct_sim = (self.simulated_counts[i] / total_in_bucket) * 100.0
-				h_sim = (pct_sim / max_y_val) * graph_h
-				full_height += h_sim
-				
-			full_y = y_known - h_unrev - h_sim
-			self.bar_rects.append((QRectF(x, full_y, bar_width, full_height), i))
-			
-			if h_unrev > 0:
-				painter.setBrush(QBrush(QColor("#f2c94c")))
-				rect_unrev = QRectF(x, y_unrev - h_sim, bar_width, h_unrev)
-				painter.drawRect(rect_unrev)
-
-			if h_sim > 0:
-				y_sim = y_known - h_sim
-				painter.setBrush(QBrush(QColor("#9c27b0"))) # Purple for simulated
-				rect_sim = QRectF(x, y_sim, bar_width, h_sim)
-				painter.drawRect(rect_sim)
-
-		painter.setPen(Qt.GlobalColor.black)
-		
-		if self.hsk_mode:
-			label_text = "HSK Levels"
-			painter.drawText(margin_left + graph_w // 2 - 50, h - 5, label_text)
-			
-			for i in range(num_buckets):
-				x = margin_left + i * bar_width
-				label_x = x + bar_width / 2 - 15
-				painter.drawText(int(label_x), int(h - 20), f"HSK{i+1}")
-		
-		else:
-			label_text = f"Frequency Rank (buckets of {self.bucket_size})"
-			painter.drawText(margin_left + graph_w // 2 - 100, h - 5, label_text)
-			
-			target_labels = 10
-			step = max(1, num_buckets // target_labels)
-			
-			for i in range(0, num_buckets, step):
-				x = margin_left + i * bar_width
-				rank_val = i * self.bucket_size + 1
-				painter.drawText(int(x), int(h - 20), str(rank_val))
-			
-			painter.drawText(int(w - 40), int(h - 20), str(num_buckets * self.bucket_size))
-
-		painter.drawText(5, int(h - margin_bottom), "0%")
-		painter.drawText(5, int(h - margin_bottom - graph_h/2), "50%")
-		painter.drawText(5, 15, "100%")
-
 		painter.save()
-		painter.translate(15, h / 2)
-		painter.rotate(-90)
-		painter.drawText(0, 0, "Known %")
+		painter.setClipRect(plot_rect)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+		for i, count in enumerate(self.bucket_counts):
+			total = self.hsk_totals.get(i + 1, 1) if self.hsk_mode else self.bucket_size
+			total = max(1, total)
+			unreviewed = self.unreviewed_counts[i] if i < len(self.unreviewed_counts) else 0
+			simulated = self.simulated_counts[i] if i < len(self.simulated_counts) else 0
+			x = left + round(i * bar_width)
+			next_x = left + round((i + 1) * bar_width)
+			draw_width = next_x - x
+			bar_bottom = float(bottom)
+			for amount, color in ((count, studied_color), (simulated, simulated_color), (unreviewed, unreviewed_color)):
+				bar_h = amount / total * graph_h
+				bar_bottom -= bar_h
+				if bar_h > 0:
+					painter.fillRect(QRectF(x, bar_bottom, draw_width, bar_h), color)
+			self.bar_rects.append((QRectF(x, bar_bottom, draw_width, bottom - bar_bottom), i))
 		painter.restore()
+		painter.setPen(text_color)
+		tick_y = bottom + fm.ascent() + 10
+		if self.hsk_mode:
+			axis_label = "HSK level"
+			for i in range(num_buckets):
+				label = f"HSK {i + 1}" if bar_width > fm.horizontalAdvance("HSK 6") + 8 else str(i + 1)
+				x = left + (i + 0.5) * bar_width - fm.horizontalAdvance(label) / 2
+				painter.drawText(int(x), tick_y, label)
+		else:
+			axis_label = f"Frequency rank · {self.bucket_size:,} words per bucket"
+			end_label = f"{num_buckets * self.bucket_size:,}"
+			end_x = left + graph_w - fm.horizontalAdvance(end_label)
+			min_gap = max(72, fm.horizontalAdvance(end_label) + 20)
+			step = max(1, math.ceil(num_buckets / max(1, graph_w // min_gap)))
+			previous_right = left - 12
+			for i in range(0, num_buckets, step):
+				label = f"{i * self.bucket_size + 1:,}"
+				label_w = fm.horizontalAdvance(label)
+				x = left + i * bar_width - (label_w / 2 if i else 0)
+				if x < previous_right + 12 or x + label_w > end_x - 12:
+					continue
+				painter.drawText(int(x), tick_y, label)
+				previous_right = x + label_w
+			painter.drawText(end_x, tick_y, end_label)
+		axis_label = fm.elidedText(axis_label, Qt.TextElideMode.ElideRight, graph_w)
+		painter.drawText(left + (graph_w - fm.horizontalAdvance(axis_label)) // 2, h - padding - fm.descent(), axis_label)
 
 class NewWordsDialog(QDialog):
 	def __init__(self, parent=None):
