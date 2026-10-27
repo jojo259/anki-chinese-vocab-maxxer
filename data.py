@@ -35,7 +35,7 @@ def cedict_to_diacritic(pinyin: str) -> str:
 		'o': 'ōóǒò', 'u': 'ūúǔù', 'ü': 'ǖǘǚǜ'
 	}
 	result = []
-	for syl in pinyin.split():
+	for syl in pinyin.lower().split():
 		tone = int(syl[-1]) if syl[-1].isdigit() else 5
 		base = syl[:-1] if syl[-1].isdigit() else syl
 		base = base.replace('u:', 'ü').replace('v', 'ü')
