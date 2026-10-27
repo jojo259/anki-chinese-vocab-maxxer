@@ -14,7 +14,7 @@ import math
 
 _pre_review_ivl = {}
 _session_gain = 0.0
-_last_retrievabilities = {}
+_pre_review_retrievabilities = {}
 
 def on_update_all():
 	cnt = 0
@@ -1052,10 +1052,18 @@ def on_info():
 	mw.chinese_info_dialog = ChineseInfoDialog(mw)
 	mw.chinese_info_dialog.exec()
 
+def _get_card_retrievability(card_id):
+	stats = mw.col.card_stats_data(card_id)
+	if stats.HasField('fsrs_retrievability'):
+		return stats.fsrs_retrievability
+	return None
+
+
 def on_card_will_show(card):
 	if card.note_type()['name'] != "chinese-word":
 		return
 	_pre_review_ivl[card.id] = card.ivl
+	_pre_review_retrievabilities[card.id] = _get_card_retrievability(card.id)
 
 
 def on_card_reviewed(reviewer, card, ease):
@@ -1064,8 +1072,8 @@ def on_card_reviewed(reviewer, card, ease):
 	note = card.note()
 	word = note['word']
 	freq_weight = get_frequency_weight(word) or 0
-	stats = mw.col.card_stats_data(card.id)
-	r_after = getattr(stats, 'fsrs_retrievability', 0.0)
+	r_before = _pre_review_retrievabilities.pop(card.id, None)
+	r_after = _get_card_retrievability(card.id)
 
 	global _pre_review_ivl
 	ivl_before = _pre_review_ivl.get(card.id, 0)
@@ -1081,16 +1089,17 @@ def on_card_reviewed(reviewer, card, ease):
 	_session_gain += delta_days
 	
 	total_mass = get_total_frequency_mass()
-	if total_mass:
-		global _last_retrievabilities
-		r_before = _last_retrievabilities.get(card.id, 0.0)
-		_last_retrievabilities[card.id] = r_after
-		
+	change_text = "unavailable"
+	if total_mass and r_before is not None and r_after is not None:
 		delta = freq_weight * (r_after - r_before)
 		comprehension_change = delta / total_mass
-		comprehension_change = max(comprehension_change, 0.0000000001)
-		
-		tooltip(f"Comprehension change: 1 / {readable_number(1 / comprehension_change)}<br>Days Gained: {delta_days:+.0f} (Session: {_session_gain:+.0f})")
+		if comprehension_change == 0:
+			change_text = "0"
+		else:
+			sign = "+" if comprehension_change > 0 else "-"
+			change_text = f"{sign}1 / {readable_number(1 / abs(comprehension_change))}"
+
+	tooltip(f"Comprehension change: {change_text}<br>Days Gained: {delta_days:+.0f} (Session: {_session_gain:+.0f})")
 
 def readable_number(x):
 	if x > 1_000_000_000:
