@@ -342,30 +342,26 @@ class HistoryGraph(QWidget):
 		self.data_history = [] # list of (timestamp_sec, basic_pct, weighted_pct)
 		self.setMinimumHeight(300)
 		self.hover_idx = -1
+		self.plot_rect = QRectF()
 
 	def set_data(self, history):
 		self.data_history = history
 		self.update()
 
 	def mouseMoveEvent(self, event):
-		if not self.data_history:
+		if not self.data_history or self.plot_rect.isEmpty():
 			return
 		
 		p = event.position()
 		x = p.x()
-		w = self.width()
-		margin_left = 60
-		margin_right = 20
-		graph_w = w - margin_left - margin_right
-		
-		if x < margin_left or x > w - margin_right:
+		if not self.plot_rect.contains(p):
 			if self.hover_idx != -1:
 				self.hover_idx = -1
 				QToolTip.hideText()
 				self.update()
 			return
 
-		ratio = (x - margin_left) / graph_w
+		ratio = (x - self.plot_rect.left()) / self.plot_rect.width()
 		idx = int(ratio * (len(self.data_history) - 1))
 		idx = max(0, min(idx, len(self.data_history) - 1))
 		
@@ -374,15 +370,21 @@ class HistoryGraph(QWidget):
 			self.update()
 			
 			ts, basic, weighted, weighted_all = self.data_history[idx]
-			date_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+			date_str = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y')
 			
 			tooltip_text = (
 				f"<b>{date_str}</b><br>"
-				f"Basic (Active): {basic:.2f}%<br>"
-				f"Weighted (Active): {weighted:.2f}%<br>"
-				f"<span style='color:#f0ad4e'>Weighted (Inc. Suspended): {weighted_all:.2f}%</span>"
+				f"Basic (Active): {basic:.3g}%<br>"
+				f"Weighted (Active): {weighted:.3g}%<br>"
+				f"Weighted (Inc. Suspended): {weighted_all:.3g}%"
 			)
 			QToolTip.showText(event.globalPosition().toPoint(), tooltip_text, self)
+
+	def leaveEvent(self, event):
+		self.hover_idx = -1
+		QToolTip.hideText()
+		self.update()
+		super().leaveEvent(event)
 
 	def paintEvent(self, event):
 		painter = QPainter(self)
@@ -390,29 +392,40 @@ class HistoryGraph(QWidget):
 		
 		w = self.width()
 		h = self.height()
-		margin_left = 60
-		margin_bottom = 30
+		fm = painter.fontMetrics()
+		margin_left = max(60, fm.horizontalAdvance("100%") + 20)
+		margin_bottom = fm.height() * 2 + 24
 		margin_right = 20
-		margin_top = 20
+		margin_top = fm.height() + 16
 		
 		graph_w = w - margin_left - margin_right
 		graph_h = h - margin_bottom - margin_top
 		
-		painter.fillRect(0, 0, w, h, QColor("#ffffff"))
+		background = self.palette().window().color()
+		text_color = self.palette().windowText().color()
+		grid_color = QColor(text_color)
+		grid_color.setAlpha(32)
+		painter.fillRect(self.rect(), background)
+		self.plot_rect = QRectF(margin_left, margin_top, graph_w, graph_h)
+		if self.plot_rect.isEmpty():
+			return
+		painter.fillRect(self.plot_rect, background.darker(110 if background.lightness() < 128 else 103))
+		painter.setPen(text_color)
+		painter.drawText(margin_left, margin_top - 10, "Coverage (%)")
 		
 		# Draw axes
-		painter.setPen(QPen(QColor("#cccccc"), 1))
+		painter.setPen(QPen(grid_color, 1))
 		painter.drawLine(margin_left, margin_top, margin_left, int(h - margin_bottom)) # Y axis
 		painter.drawLine(margin_left, int(h - margin_bottom), int(w - margin_right), int(h - margin_bottom)) # X axis
 		
 		# Y axis labels
-		painter.setPen(Qt.GlobalColor.black)
-		for i in range(0, 101, 20):
+		painter.setPen(text_color)
+		for i in (0, 25, 50, 75, 100):
 			y = h - margin_bottom - (i / 100.0) * graph_h
-			painter.drawText(5, int(y + 5), 50, 20, Qt.AlignmentFlag.AlignRight, f"{i}%")
-			painter.setPen(QPen(QColor("#eeeeee"), 1))
+			painter.drawText(QRectF(0, y - fm.height() / 2, margin_left - 10, fm.height()), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{i}%")
+			painter.setPen(QPen(grid_color, 1))
 			painter.drawLine(margin_left, int(y), int(w - margin_right), int(y))
-			painter.setPen(Qt.GlobalColor.black)
+			painter.setPen(text_color)
 
 		if not self.data_history:
 			return
@@ -456,27 +469,23 @@ class HistoryGraph(QWidget):
 		painter.setPen(pen_weighted)
 		painter.drawPath(path_weighted)
 
-		# Legend
-		painter.setPen(Qt.GlobalColor.black)
-		
-		# Basic
-		painter.fillRect(margin_left + 10, margin_top + 10, 10, 10, QColor("#5c9eff"))
-		painter.drawText(margin_left + 25, margin_top + 20, "Basic (Active)")
-		
-		# Weighted
-		painter.fillRect(margin_left + 10, margin_top + 30, 10, 10, QColor("#e91e63"))
-		painter.drawText(margin_left + 25, margin_top + 40, "Weighted (Active)")
-
-		# All
-		painter.fillRect(margin_left + 150, margin_top + 30, 10, 10, QColor("#f2c94c"))
-		painter.drawText(margin_left + 165, margin_top + 40, "Weighted (Inc. Suspended)")
-
+		painter.setPen(text_color)
+		tick_count = max(1, min(6, graph_w // (2 * fm.horizontalAdvance("30 Sep 2026") + 16) + 1))
+		indices = sorted({round(i * (len(self.data_history) - 1) / max(1, tick_count - 1)) for i in range(tick_count)})
+		for i in indices:
+			ts = self.data_history[i][0]
+			label = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y')
+			label_w = fm.horizontalAdvance(label)
+			x = margin_left + ((ts - start_ts) / duration) * graph_w
+			x = max(margin_left, min(x - label_w / 2, w - margin_right - label_w))
+			painter.drawText(int(x), h - margin_bottom + fm.ascent() + 10, label)
+		painter.drawText(margin_left + (graph_w - fm.horizontalAdvance("Date")) // 2, h - 12, "Date")
 
 		# Hover line
 		if self.hover_idx >= 0:
 			ts, basic, weighted, w_all = self.data_history[self.hover_idx]
 			x = margin_left + ((ts - start_ts) / duration) * graph_w
-			painter.setPen(QPen(QColor("#000000"), 1, Qt.PenStyle.DashLine))
+			painter.setPen(QPen(text_color, 1, Qt.PenStyle.DashLine))
 			painter.drawLine(int(x), margin_top, int(x), int(h - margin_bottom))
 			
 			# Draw dots
@@ -484,6 +493,7 @@ class HistoryGraph(QWidget):
 			y_w = h - margin_bottom - (weighted / 100.0) * graph_h
 			y_a = h - margin_bottom - (w_all / 100.0) * graph_h
 			
+			painter.setPen(Qt.PenStyle.NoPen)
 			painter.setBrush(QBrush(QColor("#f2c94c")))
 			painter.drawEllipse(QPointF(x, y_a), 4, 4)
 			
@@ -505,6 +515,16 @@ class HistoryDialog(QDialog):
 		
 		layout = QVBoxLayout()
 		self.setLayout(layout)
+		layout.setContentsMargins(16, 16, 16, 16)
+		layout.setSpacing(20)
+		legend = QLabel(
+			"<span style='color:#5c9eff'>■</span> Basic (Active) &nbsp; "
+			"<span style='color:#e91e63'>■</span> Weighted (Active) &nbsp; "
+			"<span style='color:#f2c94c'>■</span> Weighted (Inc. Suspended)"
+		)
+		legend.setWordWrap(True)
+		legend.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+		layout.addWidget(legend)
 		
 		self.lbl_status = QLabel("Loading history... (this may take a moment)")
 		self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -512,11 +532,11 @@ class HistoryDialog(QDialog):
 		
 		self.graph = HistoryGraph()
 		self.graph.setVisible(False)
-		layout.addWidget(self.graph)
+		layout.addWidget(self.graph, 1)
 		
 		self.close_btn = QPushButton("Close")
 		self.close_btn.clicked.connect(self.accept)
-		layout.addWidget(self.close_btn)
+		layout.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignRight)
 		
 		QTimer.singleShot(100, self.calculate_history)
 
