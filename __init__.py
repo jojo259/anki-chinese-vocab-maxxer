@@ -58,7 +58,7 @@ from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
-	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget
+	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout
 )
 
 class FrequencyGraph(QWidget):
@@ -340,17 +340,18 @@ class HistoryGraph(QWidget):
 	SERIES = (
 		("Frequency Coverage (Active)", "#5c9eff"),
 		("Weighted (Active)", "#e91e63"),
+		("Frequency Coverage (Inc. Suspended)", "#45bfa0"),
 		("Weighted (Inc. Suspended)", "#f2c94c"),
 	)
 
 	def __init__(self, parent=None):
 		super().__init__(parent)
 		self.setMouseTracking(True)
-		self.data_history = [] # list of (timestamp_sec, basic_pct, weighted_pct)
+		self.data_history = [] # list of (timestamp_sec, *series_values)
 		self.setMinimumHeight(300)
 		self.hover_idx = -1
 		self.plot_rect = QRectF()
-		self.visible_series = [True, True, False]
+		self.visible_series = [True, True, False, False]
 
 	def set_data(self, history):
 		self.data_history = history
@@ -448,9 +449,7 @@ class HistoryGraph(QWidget):
 			return
 
 		# Create paths
-		path_basic = QPainterPath()
-		path_weighted = QPainterPath()
-		path_all = QPainterPath()
+		paths = [QPainterPath() for _ in self.SERIES]
 		
 		start_ts = self.data_history[0][0]
 		end_ts = self.data_history[-1][0]
@@ -462,18 +461,13 @@ class HistoryGraph(QWidget):
 			y = h - margin_bottom - (val / 100.0) * graph_h
 			return QPointF(x, y)
 
-		path_basic.moveTo(get_pt(0, self.data_history[0][1]))
-		path_weighted.moveTo(get_pt(0, self.data_history[0][2]))
-		path_all.moveTo(get_pt(0, self.data_history[0][3]))
-		
-		for i in range(1, len(self.data_history)):
-			path_basic.lineTo(get_pt(i, self.data_history[i][1]))
-			path_weighted.lineTo(get_pt(i, self.data_history[i][2]))
-			path_all.lineTo(get_pt(i, self.data_history[i][3]))
+		for index, path in enumerate(paths):
+			path.moveTo(get_pt(0, self.data_history[0][index + 1]))
+			for i in range(1, len(self.data_history)):
+				path.lineTo(get_pt(i, self.data_history[i][index + 1]))
 			
-		# Draw the suspended-inclusive curve first so it is behind the active curves.
-		paths = (path_basic, path_weighted, path_all)
-		for index in (2, 0, 1):
+		# Draw the suspended-inclusive curves first so they are behind the active curves.
+		for index in (2, 3, 0, 1):
 			if self.visible_series[index]:
 				painter.setPen(QPen(QColor(self.SERIES[index][1]), 2))
 				painter.drawPath(paths[index])
@@ -492,15 +486,14 @@ class HistoryGraph(QWidget):
 
 		# Hover line
 		if self.hover_idx >= 0:
-			ts, basic, weighted, w_all = self.data_history[self.hover_idx]
+			ts, *values = self.data_history[self.hover_idx]
 			x = margin_left + ((ts - start_ts) / duration) * graph_w
 			painter.setPen(QPen(text_color, 1, Qt.PenStyle.DashLine))
 			painter.drawLine(int(x), margin_top, int(x), int(h - margin_bottom))
 			
 			# Draw dots only for visible curves, in the same order as the paths.
-			values = (basic, weighted, w_all)
 			painter.setPen(Qt.PenStyle.NoPen)
-			for index in (2, 0, 1):
+			for index in (2, 3, 0, 1):
 				if self.visible_series[index]:
 					y = h - margin_bottom - (values[index] / 100.0) * graph_h
 					painter.setBrush(QBrush(QColor(self.SERIES[index][1])))
@@ -554,7 +547,7 @@ class HistoryDialog(QDialog):
 		controls.addStretch()
 		layout.addLayout(controls)
 		self.graph = HistoryGraph()
-		legend = QHBoxLayout()
+		legend = QGridLayout()
 		for index, (label, color) in enumerate(self.graph.SERIES):
 			checkbox = QCheckBox(label)
 			checkbox.setChecked(self.graph.visible_series[index])
@@ -564,8 +557,8 @@ class HistoryDialog(QDialog):
 				"QCheckBox::indicator:unchecked { background-color:transparent; }"
 			)
 			checkbox.toggled.connect(lambda checked, index=index: self.graph.set_series_visible(index, checked))
-			legend.addWidget(checkbox)
-		legend.addStretch()
+			legend.addWidget(checkbox, index % 2, index // 2)
+		legend.setColumnStretch(2, 1)
 		layout.addLayout(legend)
 		
 		self.lbl_status = QLabel()
@@ -720,6 +713,7 @@ class HistoryDialog(QDialog):
 			
 			# Calculate Daily Stats
 			day_basic_active_mass = 0.0
+			day_basic_all_mass = 0.0
 			day_weighted_active_mass = 0.0
 			day_weighted_all_mass = 0.0
 			
@@ -729,6 +723,7 @@ class HistoryDialog(QDialog):
 					continue
 					
 				w_mass = word_weights[w]
+				day_basic_all_mass += w_mass
 				
 				# Check if active
 				has_active = any(cid in active_cids for cid in cards)
@@ -762,23 +757,26 @@ class HistoryDialog(QDialog):
 				day_weighted_all_mass += w_mass * max_r_all
 
 			basic_pct = min(100.0, (day_basic_active_mass / total_mass) * 100)
+			basic_all_pct = min(100.0, (day_basic_all_mass / total_mass) * 100)
 			weighted_active_pct = min(100.0, (day_weighted_active_mass / total_mass) * 100)
 			weighted_all_pct = min(100.0, (day_weighted_all_mass / total_mass) * 100)
 			
 			ts_display = sample_ms / 1000.0
-			history_points.append((ts_display, basic_pct, weighted_active_pct, weighted_all_pct))
+			history_points.append((ts_display, basic_pct, weighted_active_pct, basic_all_pct, weighted_all_pct))
 			
 		# Today's endpoint uses the main window's current-card rules.
 		known_query = f"{query} (is:learn OR is:review)"
 		known_active = _get_known_words(col, f"{known_query} -is:suspended", retrievabilities)
 		known_all = _get_known_words(col, known_query, retrievabilities)
 		basic_mass = sum(_get_word_mass(w) for w in known_active)
+		basic_all_mass = sum(_get_word_mass(w) for w in known_all)
 		weighted_active_mass = sum(_get_word_mass(w) * d['r'] for w, d in known_active.items())
 		weighted_all_mass = sum(_get_word_mass(w) * d['r'] for w, d in known_all.items())
 		history_points.append((
 			now_ts / 1000.0,
 			basic_mass / total_mass * 100,
 			weighted_active_mass / total_mass * 100,
+			basic_all_mass / total_mass * 100,
 			weighted_all_mass / total_mass * 100,
 		))
 		self.history_cache[self.card_type_mode] = (history_points, missing_reviews, len(missing_card_ids))
