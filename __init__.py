@@ -568,8 +568,8 @@ class HistoryDialog(QDialog):
 			self.lbl_status.setText("No frequency data available.")
 			return
 
-		# Fetch simplified review log: id, cid, ivl
-		raw_reviews = col.db.all("SELECT id, cid, ivl FROM revlog ORDER BY id")
+		# Fetch review IDs and card IDs.
+		raw_reviews = col.db.all("SELECT id, cid FROM revlog ORDER BY id")
 		
 		# Match Anki's reconstructed FSRS states to the original log entries.
 		reviews_by_card = {}
@@ -582,9 +582,12 @@ class HistoryDialog(QDialog):
 			stats = col.card_stats_data(cid)
 			params = stats.fsrs_params
 			decay = params[20] if len(params) >= 21 else (0.5 if params else 0.1542)
-			for (rid, _, ivl), entry in zip(reviews, reversed(stats.revlog), strict=True):
-				# Learning, review and relearning answers also count with sub-day intervals.
-				studied = ivl >= 1 or (entry.button_chosen > 0 and entry.review_kind in (0, 1, 2))
+			for (rid, _), entry in zip(reviews, reversed(stats.revlog), strict=True):
+				# Match Anki's reset and scheduling-review rules, including Grade Now.
+				is_reset = entry.review_kind == 4 and entry.ease == 0
+				studied = entry.button_chosen > 0 and not (entry.review_kind == 3 and entry.ease == 0)
+				if not studied and not is_reset:
+					continue
 				stability = entry.memory_state.stability if entry.HasField('memory_state') else 0.0
 				if studied and stability <= 0:
 					missing_memory_states = True
