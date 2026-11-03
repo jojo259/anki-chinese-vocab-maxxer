@@ -568,11 +568,23 @@ class HistoryDialog(QDialog):
 		# Fetch simplified review log: id, cid, ivl
 		raw_reviews = col.db.all("SELECT id, cid, ivl FROM revlog ORDER BY id")
 		
-		# Filter for relevant reviews and determine start date
+		# Match Anki's reconstructed FSRS states to the original log entries.
+		reviews_by_card = {}
+		for review in raw_reviews:
+			if review[1] in cid_to_word:
+				reviews_by_card.setdefault(review[1], []).append(review)
 		relevant_reviews = []
-		for r in raw_reviews:
-			if r[1] in cid_to_word:
-				relevant_reviews.append(r)
+		missing_memory_states = False
+		for cid, reviews in reviews_by_card.items():
+			stats = col.card_stats_data(cid)
+			params = stats.fsrs_params
+			decay = params[20] if len(params) >= 21 else (0.5 if params else 0.1542)
+			for (rid, _, ivl), entry in zip(reviews, reversed(stats.revlog), strict=True):
+				stability = entry.memory_state.stability if entry.HasField('memory_state') else 0.0
+				if ivl >= 1 and stability <= 0:
+					missing_memory_states = True
+				relevant_reviews.append((rid, cid, ivl, stability, decay))
+		relevant_reviews.sort(key=lambda review: review[0])
 				
 		if not relevant_reviews:
 			self.lbl_status.setText("No Chinese reviews found.")
@@ -582,7 +594,7 @@ class HistoryDialog(QDialog):
 		start_day_idx = first_ts // 86400000
 		
 		# Simulation State
-		# word_states: word -> { cid -> { 'ivl': int, 'last_seen': day_idx } }
+		# word_states: word -> { cid -> { 'stability': float, 'decay': float, 'last_seen': day_idx } }
 		word_states = {}
 		
 		history_points = []
@@ -599,7 +611,7 @@ class HistoryDialog(QDialog):
 			
 			# Process reviews for this day
 			while rev_cursor < num_reviews:
-				rid, cid, ivl = relevant_reviews[rev_cursor]
+				rid, cid, ivl, stability, decay = relevant_reviews[rev_cursor]
 				if rid >= day_limit_ms:
 					break
 				
@@ -614,7 +626,7 @@ class HistoryDialog(QDialog):
 				# ivl < 1: Card is in learning or re-learning (lapse)
 				
 				if ivl >= 1:
-					word_states[w][cid] = {'ivl': ivl, 'last_seen': day_idx}
+					word_states[w][cid] = {'stability': stability, 'decay': decay, 'last_seen': day_idx}
 				else:
 					# Card lapsed or is learning.
 					if cid in word_states[w]:
@@ -645,13 +657,15 @@ class HistoryDialog(QDialog):
 				max_r_all = 0.0
 				
 				for cid, c_state in cards.items():
-					ivl = c_state['ivl']
+					stability = c_state['stability']
+					decay = c_state['decay']
 					last_seen = c_state['last_seen']
 					
 					elapsed = day_idx - last_seen
 					r_val = 0.0
-					if ivl > 0:
-						r_val = 0.9 ** (elapsed / float(ivl))
+					if stability > 0:
+						factor = 0.9 ** (-1.0 / decay) - 1.0
+						r_val = (1.0 + factor * elapsed / stability) ** -decay
 					
 					if r_val > max_r_all:
 						max_r_all = r_val
@@ -672,7 +686,8 @@ class HistoryDialog(QDialog):
 			
 		self.graph.set_data(history_points)
 		self.graph.setVisible(True)
-		self.lbl_status.setVisible(False)
+		self.lbl_status.setText("Weighted history is incomplete: some reviews have no FSRS memory state.")
+		self.lbl_status.setVisible(missing_memory_states)
 
 
 class ChineseInfoDialog(QDialog):
