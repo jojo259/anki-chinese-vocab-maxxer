@@ -54,6 +54,7 @@ def on_update_all():
 
 import datetime
 import time
+from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
@@ -362,8 +363,10 @@ class HistoryGraph(QWidget):
 			return
 
 		ratio = (x - self.plot_rect.left()) / self.plot_rect.width()
-		idx = int(ratio * (len(self.data_history) - 1))
-		idx = max(0, min(idx, len(self.data_history) - 1))
+		target_ts = self.data_history[0][0] + ratio * (self.data_history[-1][0] - self.data_history[0][0])
+		idx = min(bisect_left(self.data_history, (target_ts,)), len(self.data_history) - 1)
+		if idx > 0 and target_ts - self.data_history[idx - 1][0] <= self.data_history[idx][0] - target_ts:
+			idx -= 1
 		
 		if idx != self.hover_idx:
 			self.hover_idx = idx
@@ -593,10 +596,10 @@ class HistoryDialog(QDialog):
 			return
 
 		first_ts = relevant_reviews[0][0]
-		start_day_idx = first_ts // 86400000
+		start_date = datetime.datetime.fromtimestamp(first_ts / 1000).date()
 		
 		# Simulation State
-		# word_states: word -> { cid -> { 'stability': float, 'decay': float, 'last_seen': day_idx } }
+		# word_states: word -> { cid -> { 'stability': float, 'decay': float, 'last_seen': timestamp_ms } }
 		word_states = {}
 		
 		history_points = []
@@ -605,16 +608,18 @@ class HistoryDialog(QDialog):
 		num_reviews = len(relevant_reviews)
 		
 		now_ts = int(time.time() * 1000)
-		end_day_idx = now_ts // 86400000
+		end_date = datetime.datetime.fromtimestamp(now_ts / 1000).date()
 		
-		# Iterate days
-		for day_idx in range(start_day_idx, end_day_idx + 1):
-			day_limit_ms = (day_idx + 1) * 86400000
+		# Sample completed local days at their end, and today at the current time.
+		for day_offset in range((end_date - start_date).days + 1):
+			next_date = start_date + datetime.timedelta(days=day_offset + 1)
+			day_limit_ms = int(datetime.datetime.combine(next_date, datetime.time.min).timestamp() * 1000)
+			sample_ms = min(day_limit_ms - 1, now_ts)
 			
 			# Process reviews for this day
 			while rev_cursor < num_reviews:
 				rid, cid, studied, stability, decay = relevant_reviews[rev_cursor]
-				if rid >= day_limit_ms:
+				if rid > sample_ms:
 					break
 				
 				rev_cursor += 1
@@ -624,7 +629,7 @@ class HistoryDialog(QDialog):
 					word_states[w] = {}
 				
 				if studied:
-					word_states[w][cid] = {'stability': stability, 'decay': decay, 'last_seen': day_idx}
+					word_states[w][cid] = {'stability': stability, 'decay': decay, 'last_seen': rid}
 				else:
 					if cid in word_states[w]:
 						del word_states[w][cid]
@@ -658,7 +663,7 @@ class HistoryDialog(QDialog):
 					decay = c_state['decay']
 					last_seen = c_state['last_seen']
 					
-					elapsed = day_idx - last_seen
+					elapsed = (sample_ms - last_seen) / 86400000.0
 					r_val = 0.0
 					if stability > 0:
 						factor = 0.9 ** (-1.0 / decay) - 1.0
@@ -678,7 +683,7 @@ class HistoryDialog(QDialog):
 			weighted_active_pct = min(100.0, (day_weighted_active_mass / total_mass) * 100)
 			weighted_all_pct = min(100.0, (day_weighted_all_mass / total_mass) * 100)
 			
-			ts_display = day_idx * 86400 + 43200
+			ts_display = sample_ms / 1000.0
 			history_points.append((ts_display, basic_pct, weighted_active_pct, weighted_all_pct))
 			
 		self.graph.set_data(history_points)
