@@ -566,6 +566,7 @@ class HistoryDialog(QDialog):
 		
 		self.lbl_status = QLabel()
 		self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		self.lbl_status.setWordWrap(True)
 		self.lbl_status.setVisible(False)
 		layout.addWidget(self.lbl_status)
 		
@@ -609,11 +610,14 @@ class HistoryDialog(QDialog):
 		self.graph_stack.setCurrentWidget(self.loading_label)
 		self.history_timer.start(100)
 
-	def show_history(self, history_points, missing_memory_states):
+	def show_history(self, history_points, missing_reviews, missing_cards):
 		self.graph.set_data(history_points)
 		self.graph_stack.setCurrentWidget(self.graph)
-		self.lbl_status.setText("Weighted history is incomplete: some reviews have no FSRS memory state.")
-		self.lbl_status.setVisible(missing_memory_states)
+		self.lbl_status.setText(
+			f"Weighted history is incomplete. Reviews without FSRS memory states: {missing_reviews:,}; "
+			f"affected cards: {missing_cards:,}."
+		)
+		self.lbl_status.setVisible(missing_reviews > 0)
 
 	def calculate_history(self):
 		col = mw.col
@@ -649,7 +653,8 @@ class HistoryDialog(QDialog):
 			if review[1] in cid_to_word:
 				reviews_by_card.setdefault(review[1], []).append(review)
 		relevant_reviews = []
-		missing_memory_states = False
+		missing_reviews = 0
+		missing_card_ids = set()
 		retrievabilities = {}
 		for cid, reviews in reviews_by_card.items():
 			stats = col.card_stats_data(cid)
@@ -664,7 +669,8 @@ class HistoryDialog(QDialog):
 					continue
 				stability = entry.memory_state.stability if entry.HasField('memory_state') else 0.0
 				if studied and stability <= 0:
-					missing_memory_states = True
+					missing_reviews += 1
+					missing_card_ids.add(cid)
 				relevant_reviews.append((rid, cid, studied, stability, decay))
 		relevant_reviews.sort(key=lambda review: review[0])
 				
@@ -772,8 +778,8 @@ class HistoryDialog(QDialog):
 			weighted_active_mass / total_mass * 100,
 			weighted_all_mass / total_mass * 100,
 		))
-		self.history_cache[self.card_type_mode] = (history_points, missing_memory_states)
-		self.show_history(history_points, missing_memory_states)
+		self.history_cache[self.card_type_mode] = (history_points, missing_reviews, len(missing_card_ids))
+		self.show_history(*self.history_cache[self.card_type_mode])
 
 
 class ChineseInfoDialog(QDialog):
