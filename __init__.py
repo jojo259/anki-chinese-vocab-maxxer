@@ -507,6 +507,29 @@ class HistoryGraph(QWidget):
 			painter.drawEllipse(QPointF(x, y_w), 4, 4)
 
 
+def _get_known_words(col, query, retrievabilities=None):
+	known = {}
+	for cid in col.find_cards(query):
+		card = col.get_card(cid)
+		word = card.note()['word']
+		r = retrievabilities.get(cid) if retrievabilities is not None else None
+		if r is None:
+			r = col.card_stats_data(cid).fsrs_retrievability or 0.0
+			if retrievabilities is not None:
+				retrievabilities[cid] = r
+		s = card.memory_state.stability if getattr(card, 'memory_state', None) else 0.0
+		previous = known.get(word)
+		# Keep the strongest recall; break ties using stability.
+		if previous is None or (r, s) > (previous['r'], previous['s']):
+			known[word] = {'r': r, 's': s}
+	return known
+
+
+def _get_word_mass(word):
+	val = get_frequency_weight(word)
+	return 0.0 if val is None else max(val, 1e-9)
+
+
 class HistoryDialog(QDialog):
 	def __init__(self, parent=None, card_type_mode="hanzi-define"):
 		super().__init__(parent)
@@ -578,8 +601,10 @@ class HistoryDialog(QDialog):
 				reviews_by_card.setdefault(review[1], []).append(review)
 		relevant_reviews = []
 		missing_memory_states = False
+		retrievabilities = {}
 		for cid, reviews in reviews_by_card.items():
 			stats = col.card_stats_data(cid)
+			retrievabilities[cid] = stats.fsrs_retrievability or 0.0
 			params = stats.fsrs_params
 			decay = params[20] if len(params) >= 21 else (0.5 if params else 0.1542)
 			for (rid, _), entry in zip(reviews, reversed(stats.revlog), strict=True):
@@ -594,11 +619,8 @@ class HistoryDialog(QDialog):
 				relevant_reviews.append((rid, cid, studied, stability, decay))
 		relevant_reviews.sort(key=lambda review: review[0])
 				
-		if not relevant_reviews:
-			self.lbl_status.setText("No Chinese reviews found.")
-			return
-
-		first_ts = relevant_reviews[0][0]
+		now_ts = int(time.time() * 1000)
+		first_ts = relevant_reviews[0][0] if relevant_reviews else now_ts
 		start_date = datetime.datetime.fromtimestamp(first_ts / 1000).date()
 		
 		# Simulation State
@@ -610,14 +632,13 @@ class HistoryDialog(QDialog):
 		rev_cursor = 0
 		num_reviews = len(relevant_reviews)
 		
-		now_ts = int(time.time() * 1000)
 		end_date = datetime.datetime.fromtimestamp(now_ts / 1000).date()
 		
-		# Sample completed local days at their end, and today at the current time.
-		for day_offset in range((end_date - start_date).days + 1):
+		# Sample completed local days at their end.
+		for day_offset in range((end_date - start_date).days):
 			next_date = start_date + datetime.timedelta(days=day_offset + 1)
 			day_limit_ms = int(datetime.datetime.combine(next_date, datetime.time.min).timestamp() * 1000)
-			sample_ms = min(day_limit_ms - 1, now_ts)
+			sample_ms = day_limit_ms - 1
 			
 			# Process reviews for this day
 			while rev_cursor < num_reviews:
@@ -689,6 +710,19 @@ class HistoryDialog(QDialog):
 			ts_display = sample_ms / 1000.0
 			history_points.append((ts_display, basic_pct, weighted_active_pct, weighted_all_pct))
 			
+		# Today's endpoint uses the main window's current-card rules.
+		known_query = f"{query} (is:learn OR is:review)"
+		known_active = _get_known_words(col, f"{known_query} -is:suspended", retrievabilities)
+		known_all = _get_known_words(col, known_query, retrievabilities)
+		basic_mass = sum(_get_word_mass(w) for w in known_active)
+		weighted_active_mass = sum(_get_word_mass(w) * d['r'] for w, d in known_active.items())
+		weighted_all_mass = sum(_get_word_mass(w) * d['r'] for w, d in known_all.items())
+		history_points.append((
+			now_ts / 1000.0,
+			basic_mass / total_mass * 100,
+			weighted_active_mass / total_mass * 100,
+			weighted_all_mass / total_mass * 100,
+		))
 		self.graph.set_data(history_points)
 		self.graph.setVisible(True)
 		self.lbl_status.setText("Weighted history is incomplete: some reviews have no FSRS memory state.")
@@ -839,20 +873,7 @@ class ChineseInfoDialog(QDialog):
 		query_known = f"{query_base} (is:learn OR is:review)"
 		
 		# Gather known words stats
-		known = {} # word -> {'r': retrievability, 's': stability}
-		for cid in col.find_cards(query_known):
-			card = col.get_card(cid)
-			note = card.note()
-			stats = mw.col.card_stats_data(card.id)
-			r = stats.fsrs_retrievability or 0.0
-			s = 0.0
-			if getattr(card, 'memory_state', None):
-				s = card.memory_state.stability
-			word = note['word']
-			previous = known.get(word)
-			# Keep the strongest recall; break ties using stability.
-			if previous is None or (r, s) > (previous['r'], previous['s']):
-				known[word] = {'r': r, 's': s}
+		known = _get_known_words(col, query_known)
 
 		# Gather unreviewed words independently of graph visibility.
 		unreviewed_words = set()
@@ -863,10 +884,7 @@ class ChineseInfoDialog(QDialog):
 			if w not in known:
 				unreviewed_words.add(w)
 
-		def get_mass(w):
-			val = get_frequency_weight(w)
-			if val is None: return 0.0
-			return max(val, 1e-9)
+		get_mass = _get_word_mass
 
 		# Simulate learning new words
 		simulated_words = set()
