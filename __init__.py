@@ -58,7 +58,7 @@ from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
-	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy
+	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget
 )
 
 class FrequencyGraph(QWidget):
@@ -347,6 +347,8 @@ class HistoryGraph(QWidget):
 
 	def set_data(self, history):
 		self.data_history = history
+		self.hover_idx = -1
+		QToolTip.hideText()
 		self.update()
 
 	def mouseMoveEvent(self, event):
@@ -538,11 +540,21 @@ class HistoryDialog(QDialog):
 		self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinMaxButtonsHint)
 		
 		self.card_type_mode = card_type_mode
+		self.history_cache = {}
 		
 		layout = QVBoxLayout()
 		self.setLayout(layout)
 		layout.setContentsMargins(16, 16, 16, 16)
 		layout.setSpacing(20)
+		controls = QHBoxLayout()
+		controls.addWidget(QLabel("Card type"))
+		self.combo_card_type = QComboBox()
+		self.combo_card_type.addItem("Define", "hanzi-define")
+		self.combo_card_type.addItem("Pronounce", "hanzi-pronounce")
+		self.combo_card_type.setCurrentIndex(1 if card_type_mode == "hanzi-pronounce" else 0)
+		controls.addWidget(self.combo_card_type)
+		controls.addStretch()
+		layout.addLayout(controls)
 		legend = QLabel(
 			"<span style='color:#5c9eff'>■</span> Basic (Active) &nbsp; "
 			"<span style='color:#e91e63'>■</span> Weighted (Active) &nbsp; "
@@ -552,19 +564,56 @@ class HistoryDialog(QDialog):
 		legend.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 		layout.addWidget(legend)
 		
-		self.lbl_status = QLabel("Loading history... (this may take a moment)")
+		self.lbl_status = QLabel()
 		self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		self.lbl_status.setVisible(False)
 		layout.addWidget(self.lbl_status)
 		
+		self.graph_stack = QStackedWidget()
+		self.loading_label = QLabel()
+		self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		self.loading_label.setWordWrap(True)
+		loading_font = self.loading_label.font()
+		loading_font.setPointSizeF(loading_font.pointSizeF() * 1.3)
+		self.loading_label.setFont(loading_font)
+		self.graph_stack.addWidget(self.loading_label)
 		self.graph = HistoryGraph()
-		self.graph.setVisible(False)
-		layout.addWidget(self.graph, 1)
+		self.graph_stack.addWidget(self.graph)
+		layout.addWidget(self.graph_stack, 1)
 		
 		self.close_btn = QPushButton("Close")
 		self.close_btn.clicked.connect(self.accept)
 		layout.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignRight)
 		
-		QTimer.singleShot(100, self.calculate_history)
+		self.history_timer = QTimer(self)
+		self.history_timer.setSingleShot(True)
+		self.history_timer.timeout.connect(self.calculate_history)
+		self.combo_card_type.currentIndexChanged.connect(self.refresh_history)
+		self.finished.connect(self.clear_history_cache)
+		self.refresh_history()
+
+	def clear_history_cache(self):
+		self.history_timer.stop()
+		self.history_cache.clear()
+
+	def refresh_history(self):
+		self.history_timer.stop()
+		self.card_type_mode = self.combo_card_type.currentData()
+		cached = self.history_cache.get(self.card_type_mode)
+		if cached is not None:
+			self.show_history(*cached)
+			return
+		self.graph.set_data([])
+		self.lbl_status.setVisible(False)
+		self.loading_label.setText("Loading history... (this may take a moment)")
+		self.graph_stack.setCurrentWidget(self.loading_label)
+		self.history_timer.start(100)
+
+	def show_history(self, history_points, missing_memory_states):
+		self.graph.set_data(history_points)
+		self.graph_stack.setCurrentWidget(self.graph)
+		self.lbl_status.setText("Weighted history is incomplete: some reviews have no FSRS memory state.")
+		self.lbl_status.setVisible(missing_memory_states)
 
 	def calculate_history(self):
 		col = mw.col
@@ -588,7 +637,7 @@ class HistoryDialog(QDialog):
 					
 		total_mass = get_total_frequency_mass()
 		if not total_mass:
-			self.lbl_status.setText("No frequency data available.")
+			self.loading_label.setText("No frequency data available.")
 			return
 
 		# Fetch review IDs and card IDs.
@@ -723,10 +772,8 @@ class HistoryDialog(QDialog):
 			weighted_active_mass / total_mass * 100,
 			weighted_all_mass / total_mass * 100,
 		))
-		self.graph.set_data(history_points)
-		self.graph.setVisible(True)
-		self.lbl_status.setText("Weighted history is incomplete: some reviews have no FSRS memory state.")
-		self.lbl_status.setVisible(missing_memory_states)
+		self.history_cache[self.card_type_mode] = (history_points, missing_memory_states)
+		self.show_history(history_points, missing_memory_states)
 
 
 class ChineseInfoDialog(QDialog):
