@@ -337,6 +337,12 @@ class NewWordsDialog(QDialog):
 			self.btn_load.setText("No More Words")
 
 class HistoryGraph(QWidget):
+	SERIES = (
+		("Frequency Coverage (Active)", "#5c9eff"),
+		("Weighted (Active)", "#e91e63"),
+		("Weighted (Inc. Suspended)", "#f2c94c"),
+	)
+
 	def __init__(self, parent=None):
 		super().__init__(parent)
 		self.setMouseTracking(True)
@@ -344,6 +350,7 @@ class HistoryGraph(QWidget):
 		self.setMinimumHeight(300)
 		self.hover_idx = -1
 		self.plot_rect = QRectF()
+		self.visible_series = [True, True, False]
 
 	def set_data(self, history):
 		self.data_history = history
@@ -351,8 +358,14 @@ class HistoryGraph(QWidget):
 		QToolTip.hideText()
 		self.update()
 
+	def set_series_visible(self, index, visible):
+		self.visible_series[index] = visible
+		self.hover_idx = -1
+		QToolTip.hideText()
+		self.update()
+
 	def mouseMoveEvent(self, event):
-		if not self.data_history or self.plot_rect.isEmpty():
+		if not self.data_history or self.plot_rect.isEmpty() or not any(self.visible_series):
 			return
 		
 		p = event.position()
@@ -374,14 +387,13 @@ class HistoryGraph(QWidget):
 			self.hover_idx = idx
 			self.update()
 			
-			ts, basic, weighted, weighted_all = self.data_history[idx]
+			ts, *values = self.data_history[idx]
 			date_str = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y')
 			
-			tooltip_text = (
-				f"<b>{date_str}</b><br>"
-				f"Basic (Active): {basic:.3g}%<br>"
-				f"Weighted (Active): {weighted:.3g}%<br>"
-				f"Weighted (Inc. Suspended): {weighted_all:.3g}%"
+			tooltip_text = f"<b>{date_str}</b>" + "".join(
+				f"<br>{label}: {value:.3g}%"
+				for (label, _), value, visible in zip(self.SERIES, values, self.visible_series)
+				if visible
 			)
 			QToolTip.showText(event.globalPosition().toPoint(), tooltip_text, self)
 
@@ -459,20 +471,12 @@ class HistoryGraph(QWidget):
 			path_weighted.lineTo(get_pt(i, self.data_history[i][2]))
 			path_all.lineTo(get_pt(i, self.data_history[i][3]))
 			
-		# Draw All (Yellow) first so it is behind
-		pen_all = QPen(QColor("#f2c94c"), 2)
-		painter.setPen(pen_all)
-		painter.drawPath(path_all)
-
-		# Draw Basic (Blue)
-		pen_basic = QPen(QColor("#5c9eff"), 2)
-		painter.setPen(pen_basic)
-		painter.drawPath(path_basic)
-		
-		# Draw Weighted (Red)
-		pen_weighted = QPen(QColor("#e91e63"), 2)
-		painter.setPen(pen_weighted)
-		painter.drawPath(path_weighted)
+		# Draw the suspended-inclusive curve first so it is behind the active curves.
+		paths = (path_basic, path_weighted, path_all)
+		for index in (2, 0, 1):
+			if self.visible_series[index]:
+				painter.setPen(QPen(QColor(self.SERIES[index][1]), 2))
+				painter.drawPath(paths[index])
 
 		painter.setPen(text_color)
 		tick_count = max(1, min(6, graph_w // (2 * fm.horizontalAdvance("30 Sep 2026") + 16) + 1))
@@ -493,20 +497,14 @@ class HistoryGraph(QWidget):
 			painter.setPen(QPen(text_color, 1, Qt.PenStyle.DashLine))
 			painter.drawLine(int(x), margin_top, int(x), int(h - margin_bottom))
 			
-			# Draw dots
-			y_b = h - margin_bottom - (basic / 100.0) * graph_h
-			y_w = h - margin_bottom - (weighted / 100.0) * graph_h
-			y_a = h - margin_bottom - (w_all / 100.0) * graph_h
-			
+			# Draw dots only for visible curves, in the same order as the paths.
+			values = (basic, weighted, w_all)
 			painter.setPen(Qt.PenStyle.NoPen)
-			painter.setBrush(QBrush(QColor("#f2c94c")))
-			painter.drawEllipse(QPointF(x, y_a), 4, 4)
-			
-			painter.setBrush(QBrush(QColor("#5c9eff")))
-			painter.drawEllipse(QPointF(x, y_b), 4, 4)
-			
-			painter.setBrush(QBrush(QColor("#e91e63")))
-			painter.drawEllipse(QPointF(x, y_w), 4, 4)
+			for index in (2, 0, 1):
+				if self.visible_series[index]:
+					y = h - margin_bottom - (values[index] / 100.0) * graph_h
+					painter.setBrush(QBrush(QColor(self.SERIES[index][1])))
+					painter.drawEllipse(QPointF(x, y), 4, 4)
 
 
 def _get_known_words(col, query, retrievabilities=None):
@@ -555,14 +553,20 @@ class HistoryDialog(QDialog):
 		controls.addWidget(self.combo_card_type)
 		controls.addStretch()
 		layout.addLayout(controls)
-		legend = QLabel(
-			"<span style='color:#5c9eff'>■</span> Basic (Active) &nbsp; "
-			"<span style='color:#e91e63'>■</span> Weighted (Active) &nbsp; "
-			"<span style='color:#f2c94c'>■</span> Weighted (Inc. Suspended)"
-		)
-		legend.setWordWrap(True)
-		legend.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-		layout.addWidget(legend)
+		self.graph = HistoryGraph()
+		legend = QHBoxLayout()
+		for index, (label, color) in enumerate(self.graph.SERIES):
+			checkbox = QCheckBox(label)
+			checkbox.setChecked(self.graph.visible_series[index])
+			checkbox.setStyleSheet(
+				f"QCheckBox::indicator {{ width:16px; height:16px; border:1px solid {color}; image:none; }}"
+				f"QCheckBox::indicator:checked {{ background-color:{color}; }}"
+				"QCheckBox::indicator:unchecked { background-color:transparent; }"
+			)
+			checkbox.toggled.connect(lambda checked, index=index: self.graph.set_series_visible(index, checked))
+			legend.addWidget(checkbox)
+		legend.addStretch()
+		layout.addLayout(legend)
 		
 		self.lbl_status = QLabel()
 		self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -578,7 +582,6 @@ class HistoryDialog(QDialog):
 		loading_font.setPointSizeF(loading_font.pointSizeF() * 1.3)
 		self.loading_label.setFont(loading_font)
 		self.graph_stack.addWidget(self.loading_label)
-		self.graph = HistoryGraph()
 		self.graph_stack.addWidget(self.graph)
 		layout.addWidget(self.graph_stack, 1)
 		
