@@ -580,10 +580,12 @@ class HistoryDialog(QDialog):
 			params = stats.fsrs_params
 			decay = params[20] if len(params) >= 21 else (0.5 if params else 0.1542)
 			for (rid, _, ivl), entry in zip(reviews, reversed(stats.revlog), strict=True):
+				# Learning, review and relearning answers also count with sub-day intervals.
+				studied = ivl >= 1 or (entry.button_chosen > 0 and entry.review_kind in (0, 1, 2))
 				stability = entry.memory_state.stability if entry.HasField('memory_state') else 0.0
-				if ivl >= 1 and stability <= 0:
+				if studied and stability <= 0:
 					missing_memory_states = True
-				relevant_reviews.append((rid, cid, ivl, stability, decay))
+				relevant_reviews.append((rid, cid, studied, stability, decay))
 		relevant_reviews.sort(key=lambda review: review[0])
 				
 		if not relevant_reviews:
@@ -611,7 +613,7 @@ class HistoryDialog(QDialog):
 			
 			# Process reviews for this day
 			while rev_cursor < num_reviews:
-				rid, cid, ivl, stability, decay = relevant_reviews[rev_cursor]
+				rid, cid, studied, stability, decay = relevant_reviews[rev_cursor]
 				if rid >= day_limit_ms:
 					break
 				
@@ -621,14 +623,9 @@ class HistoryDialog(QDialog):
 				if w not in word_states:
 					word_states[w] = {}
 				
-				# Logic:
-				# ivl >= 1: Card is known/reviewing
-				# ivl < 1: Card is in learning or re-learning (lapse)
-				
-				if ivl >= 1:
+				if studied:
 					word_states[w][cid] = {'stability': stability, 'decay': decay, 'last_seen': day_idx}
 				else:
-					# Card lapsed or is learning.
 					if cid in word_states[w]:
 						del word_states[w][cid]
 						if not word_states[w]:
