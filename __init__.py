@@ -248,19 +248,26 @@ class FrequencyGraph(QWidget):
 		painter.drawText(left + (graph_w - fm.horizontalAdvance(axis_label)) // 2, h - padding - fm.descent(), axis_label)
 
 class NewWordsDialog(QDialog):
-	def __init__(self, parent=None):
+	def __init__(self, parent=None, card_type_mode="hanzi-define"):
 		super().__init__(parent)
 		self.setWindowTitle("Top New Words")
+		self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 		self.resize(800, 600)
 		self.layout = QVBoxLayout()
 		self.setLayout(self.layout)
 
-		self.table = QTableWidget()
-		self.table.setColumnCount(5)
-		self.table.setHorizontalHeaderLabels(["Rank", "Word", "Pinyin", "Meaning", "Status"])
-		header = self.table.horizontalHeader()
-		header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) 
-		self.layout.addWidget(self.table)
+		controls = QHBoxLayout()
+		controls.addWidget(QLabel("Card type"))
+		self.combo_card_type = QComboBox()
+		self.combo_card_type.addItem("Define", "hanzi-define")
+		self.combo_card_type.addItem("Pronounce", "hanzi-pronounce")
+		self.combo_card_type.setCurrentIndex(1 if card_type_mode == "hanzi-pronounce" else 0)
+		controls.addWidget(self.combo_card_type)
+		controls.addStretch()
+		self.layout.addLayout(controls)
+
+		self.table_stack = QStackedWidget()
+		self.layout.addWidget(self.table_stack, 1)
 
 		self.btn_load = QPushButton("Load 100 More")
 		self.btn_load.clicked.connect(self.load_more)
@@ -271,70 +278,86 @@ class NewWordsDialog(QDialog):
 		self.layout.addWidget(self.close_btn)
 		
 		self.all_words = get_all_words()
-		self.offset = 0
 		self.batch_size = 100
-		
-		self._init_anki_state()
-		
+		self.word_lists = {}
+		col = mw.col
+		self.words_by_note = {nid: col.get_note(nid)['word'] for nid in col.find_notes("note:chinese-word")}
+		self.collection_words = set(self.words_by_note.values())
+		self.combo_card_type.currentIndexChanged.connect(self.show_word_list)
+		self.show_word_list()
+
+	def show_word_list(self):
+		card_type = self.combo_card_type.currentData()
+		if card_type in self.word_lists:
+			table, _, _, offset = self.word_lists[card_type]
+			self.table_stack.setCurrentWidget(table)
+			self._update_load_button(offset)
+			return
+
+		excluded_words, present_words = self._get_card_type_state(card_type)
+		table = QTableWidget()
+		table.setColumnCount(5)
+		table.setHorizontalHeaderLabels(["Rank", "Word", "Pinyin", "Meaning", "Status"])
+		table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+		self.table_stack.addWidget(table)
+		self.table_stack.setCurrentWidget(table)
+		self.word_lists[card_type] = (table, excluded_words, present_words, 0)
 		self.load_more()
 
-	def _init_anki_state(self):
+	def _get_card_type_state(self, card_type):
 		col = mw.col
-		self.studied_words = set()
-		self.suspended_words = set()
-		
-		query_studied = "note:chinese-word (is:learn OR is:review)"
-		for cid in col.find_cards(query_studied):
-			note = col.get_note(col.get_card(cid).nid)
-			self.studied_words.add(note['word'])
-
-		query_suspended = "note:chinese-word is:suspended"
-		for cid in col.find_cards(query_suspended):
-			note = col.get_note(col.get_card(cid).nid)
-			self.suspended_words.add(note['word'])
-		
-		self.present_words = {} 
-		for nid in col.find_notes("note:chinese-word"):
-			note = col.get_note(nid)
-			w = note['word']
-			if w not in self.present_words:
-				cards = note.cards()
-				if cards:
-					c = cards[0]
-					d_name = col.decks.name(c.did)
-					self.present_words[w] = d_name
-				else:
-					self.present_words[w] = "No Cards"
+		query = f"note:chinese-word card:{card_type}"
+		excluded_ids = set(col.find_cards(f"{query} (is:learn OR is:review OR is:suspended)"))
+		excluded_words = set()
+		present_words = {}
+		for cid in col.find_cards(query):
+			card = col.get_card(cid)
+			word = self.words_by_note.get(card.nid)
+			if word is None:
+				continue
+			if cid in excluded_ids:
+				excluded_words.add(word)
+			elif word not in present_words:
+				present_words[word] = col.decks.name(card.did)
+		return excluded_words, present_words
 
 	def load_more(self):
-		col = mw.col
+		card_type = self.combo_card_type.currentData()
+		table, excluded_words, present_words, offset = self.word_lists[card_type]
+		missing_card_status = f"No {self.combo_card_type.currentText()} Card"
 		count = 0
-		row_start = self.table.rowCount()
+		row_start = table.rowCount()
 		
-		while count < self.batch_size and self.offset < len(self.all_words):
-			word = self.all_words[self.offset]
-			self.offset += 1
+		while count < self.batch_size and offset < len(self.all_words):
+			word = self.all_words[offset]
+			offset += 1
 			
-			if word in self.studied_words or word in self.suspended_words:
+			if word in excluded_words:
 				continue
 				
-			status = self.present_words.get(word, "Not in Collection")
+			status = present_words.get(word)
+			if status is None:
+				status = missing_card_status if word in self.collection_words else "Not in Collection"
 			hsk, defs, pinyin, rank, freq_weight, freq_level = get_word_data(word)
 			
 			row = row_start + count
-			self.table.insertRow(row)
+			table.insertRow(row)
 			
-			self.table.setItem(row, 0, QTableWidgetItem(str(rank)))
-			self.table.setItem(row, 1, QTableWidgetItem(word))
-			self.table.setItem(row, 2, QTableWidgetItem(pinyin or ""))
-			self.table.setItem(row, 3, QTableWidgetItem(defs or ""))
-			self.table.setItem(row, 4, QTableWidgetItem(status))
+			table.setItem(row, 0, QTableWidgetItem(str(rank)))
+			table.setItem(row, 1, QTableWidgetItem(word))
+			table.setItem(row, 2, QTableWidgetItem(pinyin or ""))
+			table.setItem(row, 3, QTableWidgetItem(defs or ""))
+			table.setItem(row, 4, QTableWidgetItem(status))
 			
 			count += 1
 
-		if self.offset >= len(self.all_words):
-			self.btn_load.setEnabled(False)
-			self.btn_load.setText("No More Words")
+		self.word_lists[card_type] = (table, excluded_words, present_words, offset)
+		self._update_load_button(offset)
+
+	def _update_load_button(self, offset):
+		has_more = offset < len(self.all_words)
+		self.btn_load.setEnabled(has_more)
+		self.btn_load.setText("Load 100 More" if has_more else "No More Words")
 
 class HistoryGraph(QWidget):
 	SERIES = (
@@ -885,7 +908,9 @@ class ChineseInfoDialog(QDialog):
 		self.refresh_stats()
 
 	def open_new_words(self):
-		dlg = NewWordsDialog(self)
+		use_pronounce = self.combo_card_type.currentIndex() == 1
+		card_type_mode = "hanzi-pronounce" if use_pronounce else "hanzi-define"
+		dlg = NewWordsDialog(self, card_type_mode)
 		dlg.exec()
 
 	def open_history(self):
