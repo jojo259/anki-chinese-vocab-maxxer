@@ -1125,21 +1125,21 @@ class ChineseInfoDialog(QDialog):
 		return _calc_interval_gain(day_start_ms)
 
 
-def _calc_interval_gain(start_ms, *, reviews_only=False):
+def _calc_interval_gain(start_ms, *, match_card_stats=False):
 	col = mw.col
 	chinese_cids = set(col.find_cards("note:chinese-word"))
 	if not chinese_cids:
 		return 0.0
 
-	query = "SELECT cid, ivl, lastIvl FROM revlog WHERE id > ?"
-	if reviews_only:
-		# Match the rated scheduling reviews counted in the popup.
-		query += " AND ease > 0 AND NOT (type = 3 AND factor = 0)"
+	query = (
+		"SELECT cid, ivl, lastIvl FROM revlog "
+		"WHERE id > ? AND ease > 0 AND NOT (type = 3 AND factor = 0)"
+	)
 
 	def to_days(interval):
 		if interval < 0:
 			return -interval / 86400.0
-		if reviews_only:
+		if match_card_stats:
 			# Anki's card stats cap positive intervals at the signed 32-bit seconds limit.
 			return min(interval * 86400, 2_147_483_647) / 86400.0
 		return float(interval)
@@ -1171,7 +1171,7 @@ def on_card_will_show(card):
 def on_collection_operation(changes, initiator):
 	global _session_gain
 	if mw.col and changes.card and initiator is not mw.reviewer:
-		_session_gain = _calc_interval_gain(_session_start_ms, reviews_only=True)
+		_session_gain = _calc_interval_gain(_session_start_ms, match_card_stats=True)
 
 
 def on_card_reviewed(reviewer, card, ease):
