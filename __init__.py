@@ -649,8 +649,6 @@ class HistoryDialog(QDialog):
 			if review[1] in cid_to_word:
 				reviews_by_card.setdefault(review[1], []).append(review)
 		relevant_reviews = []
-		missing_reviews = 0
-		missing_card_ids = set()
 		retrievabilities = {}
 		for cid, reviews in reviews_by_card.items():
 			stats = col.card_stats_data(cid)
@@ -664,9 +662,6 @@ class HistoryDialog(QDialog):
 				if not studied and not is_reset:
 					continue
 				stability = entry.memory_state.stability if entry.HasField('memory_state') else 0.0
-				if studied and stability <= 0:
-					missing_reviews += 1
-					missing_card_ids.add(cid)
 				relevant_reviews.append((rid, cid, studied, stability, decay))
 		relevant_reviews.sort(key=lambda review: review[0])
 				
@@ -679,6 +674,8 @@ class HistoryDialog(QDialog):
 		word_states = {}
 		
 		history_points = []
+		missing_review_ids = set()
+		missing_card_ids = set()
 		
 		rev_cursor = 0
 		num_reviews = len(relevant_reviews)
@@ -745,6 +742,9 @@ class HistoryDialog(QDialog):
 					if stability > 0:
 						factor = 0.9 ** (-1.0 / decay) - 1.0
 						r_val = (1.0 + factor * elapsed / stability) ** -decay
+					else:
+						missing_review_ids.add(last_seen)
+						missing_card_ids.add(cid)
 					
 					if r_val > max_r_all:
 						max_r_all = r_val
@@ -779,7 +779,7 @@ class HistoryDialog(QDialog):
 			basic_all_mass / total_mass * 100,
 			weighted_all_mass / total_mass * 100,
 		))
-		self.history_cache[self.card_type_mode] = (history_points, missing_reviews, len(missing_card_ids))
+		self.history_cache[self.card_type_mode] = (history_points, len(missing_review_ids), len(missing_card_ids))
 		self.show_history(*self.history_cache[self.card_type_mode])
 
 
