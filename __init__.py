@@ -11,8 +11,9 @@ from .data import (
 	get_all_words,
 )
 import math
+import time
 
-_pre_review_ivl = {}
+_session_start_ms = int(time.time() * 1000)
 _session_gain = 0.0
 _pre_review_retrievabilities = {}
 
@@ -53,7 +54,6 @@ def on_update_all():
 	tooltip(f"Updated {cnt} notes")
 
 import datetime
-import time
 from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
@@ -1121,37 +1121,41 @@ class ChineseInfoDialog(QDialog):
 		self.stats_label.setText(info_text)
 
 	def _calc_todays_gain(self):
-		col = mw.col
-		# Day cutoff in seconds * 1000 for ms
-		day_start_ms = (col.sched.day_cutoff - 86400) * 1000
-		
-		chinese_cids = set(col.find_cards("note:chinese-word"))
-		if not chinese_cids:
-			return 0.0
+		day_start_ms = (mw.col.sched.day_cutoff - 86400) * 1000
+		return _calc_interval_gain(day_start_ms)
 
-		reviews = col.db.all(f"SELECT cid, ivl, lastIvl FROM revlog WHERE id > {day_start_ms}")
-		
-		total_gain = 0.0
-		
-		for (cid, ivl, last_ivl) in reviews:
-			if cid not in chinese_cids:
-				continue
-			
-			def to_days(val):
-				if val < 0: return abs(val) / 86400.0
-				return float(val)
-				
-			total_gain += (to_days(ivl) - to_days(last_ivl))
-			
-		return total_gain
+
+def _calc_interval_gain(start_ms, *, reviews_only=False):
+	col = mw.col
+	chinese_cids = set(col.find_cards("note:chinese-word"))
+	if not chinese_cids:
+		return 0.0
+
+	query = "SELECT cid, ivl, lastIvl FROM revlog WHERE id > ?"
+	if reviews_only:
+		# Match the rated scheduling reviews counted in the popup.
+		query += " AND ease > 0 AND NOT (type = 3 AND factor = 0)"
+
+	def to_days(interval):
+		if interval < 0:
+			return -interval / 86400.0
+		if reviews_only:
+			# Anki's card stats cap positive intervals at the signed 32-bit seconds limit.
+			return min(interval * 86400, 2_147_483_647) / 86400.0
+		return float(interval)
+
+	total_gain = 0.0
+	for cid, ivl, last_ivl in col.db.all(query, start_ms):
+		if cid in chinese_cids:
+			total_gain += to_days(ivl) - to_days(last_ivl)
+	return total_gain
 
 
 def on_info():
 	mw.chinese_info_dialog = ChineseInfoDialog(mw)
 	mw.chinese_info_dialog.exec()
 
-def _get_card_retrievability(card_id):
-	stats = mw.col.card_stats_data(card_id)
+def _get_card_retrievability(stats):
 	if stats.HasField('fsrs_retrievability'):
 		return stats.fsrs_retrievability
 	return None
@@ -1160,8 +1164,14 @@ def _get_card_retrievability(card_id):
 def on_card_will_show(card):
 	if card.note_type()['name'] != "chinese-word":
 		return
-	_pre_review_ivl[card.id] = card.ivl
-	_pre_review_retrievabilities[card.id] = _get_card_retrievability(card.id)
+	stats = mw.col.card_stats_data(card.id)
+	_pre_review_retrievabilities[card.id] = _get_card_retrievability(stats)
+
+
+def on_collection_operation(changes, initiator):
+	global _session_gain
+	if mw.col and changes.card and initiator is not mw.reviewer:
+		_session_gain = _calc_interval_gain(_session_start_ms, reviews_only=True)
 
 
 def on_card_reviewed(reviewer, card, ease):
@@ -1171,17 +1181,14 @@ def on_card_reviewed(reviewer, card, ease):
 	word = note['word']
 	freq_weight = get_frequency_weight(word) or 0
 	r_before = _pre_review_retrievabilities.pop(card.id, None)
-	r_after = _get_card_retrievability(card.id)
+	stats = mw.col.card_stats_data(card.id)
+	r_after = _get_card_retrievability(stats)
 
-	global _pre_review_ivl
-	ivl_before = _pre_review_ivl.get(card.id, 0)
-	_pre_review_ivl[card.id] = card.ivl
-
-	def to_days(val):
-		if val < 0: return abs(val) / 86400.0
-		return float(val)
-
-	delta_days = to_days(card.ivl) - to_days(ivl_before)
+	delta_days = 0.0
+	if stats.revlog:
+		review = stats.revlog[0]
+		if review.button_chosen > 0 and not (review.review_kind == 3 and review.ease == 0):
+			delta_days = (review.interval - review.last_interval) / 86400.0
 	
 	global _session_gain
 	_session_gain += delta_days
@@ -1220,3 +1227,4 @@ def add_tools_menu():
 gui_hooks.main_window_did_init.append(add_tools_menu)
 gui_hooks.reviewer_did_show_question.append(on_card_will_show)
 gui_hooks.reviewer_did_answer_card.append(on_card_reviewed)
+gui_hooks.operation_did_execute.append(on_collection_operation)
