@@ -59,7 +59,7 @@ from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
-	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout
+	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout, QButtonGroup
 )
 
 class FrequencyGraph(QWidget):
@@ -376,9 +376,11 @@ class HistoryGraph(QWidget):
 		self.hover_idx = -1
 		self.plot_rect = QRectF()
 		self.visible_series = [True, True, False, False]
+		self.show_time = False
 
-	def set_data(self, history):
+	def set_data(self, history, *, show_time=False):
 		self.data_history = history
+		self.show_time = show_time
 		self.hover_idx = -1
 		QToolTip.hideText()
 		self.update()
@@ -413,7 +415,8 @@ class HistoryGraph(QWidget):
 			self.update()
 			
 			ts, *values = self.data_history[idx]
-			date_str = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y')
+			date_format = '%d %b %Y %H:%M' if self.show_time else '%d %b %Y'
+			date_str = datetime.datetime.fromtimestamp(ts).strftime(date_format)
 			
 			tooltip_text = f"<b>{date_str}</b>" + "".join(
 				f"<br>{label}: {value:.3g}%"
@@ -497,11 +500,13 @@ class HistoryGraph(QWidget):
 				painter.drawPath(paths[index])
 
 		painter.setPen(text_color)
-		tick_count = max(1, min(6, graph_w // (2 * fm.horizontalAdvance("30 Sep 2026") + 16) + 1))
+		date_format = '%d %b %H:%M' if self.show_time else '%d %b %Y'
+		label_width = fm.horizontalAdvance(datetime.datetime.fromtimestamp(end_ts).strftime(date_format))
+		tick_count = max(1, min(6, graph_w // (2 * label_width + 16) + 1))
 		indices = sorted({round(i * (len(self.data_history) - 1) / max(1, tick_count - 1)) for i in range(tick_count)})
 		for i in indices:
 			ts = self.data_history[i][0]
-			label = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y')
+			label = datetime.datetime.fromtimestamp(ts).strftime(date_format)
 			label_w = fm.horizontalAdvance(label)
 			x = margin_left + ((ts - start_ts) / duration) * graph_w
 			x = max(margin_left, min(x - label_w / 2, w - margin_right - label_w))
@@ -569,6 +574,14 @@ class HistoryDialog(QDialog):
 		self.combo_card_type.setCurrentIndex(1 if card_type_mode == "hanzi-pronounce" else 0)
 		controls.addWidget(self.combo_card_type)
 		controls.addStretch()
+		self.range_buttons = QButtonGroup(self)
+		self.range_buttons.setExclusive(True)
+		for label, days in (("All History", 0), ("Past Year", 365), ("Past Month", 30), ("Past Week", 7)):
+			button = QPushButton(label)
+			button.setCheckable(True)
+			self.range_buttons.addButton(button, days)
+			button.setChecked(days == 0)
+			controls.addWidget(button)
 		layout.addLayout(controls)
 		self.graph = HistoryGraph()
 		legend = QGridLayout()
@@ -610,6 +623,7 @@ class HistoryDialog(QDialog):
 		self.history_timer.setSingleShot(True)
 		self.history_timer.timeout.connect(self.calculate_history)
 		self.combo_card_type.currentIndexChanged.connect(self.refresh_history)
+		self.range_buttons.buttonClicked.connect(self.refresh_history)
 		self.finished.connect(self.clear_history_cache)
 		self.refresh_history()
 
@@ -622,7 +636,7 @@ class HistoryDialog(QDialog):
 		self.card_type_mode = self.combo_card_type.currentData()
 		cached = self.history_cache.get(self.card_type_mode)
 		if cached is not None:
-			self.show_history(*cached)
+			self.show_history(*cached[self.range_buttons.checkedId()])
 			return
 		self.graph.set_data([])
 		self.lbl_status.setVisible(False)
@@ -631,7 +645,7 @@ class HistoryDialog(QDialog):
 		self.history_timer.start(100)
 
 	def show_history(self, history_points, missing_reviews, missing_cards):
-		self.graph.set_data(history_points)
+		self.graph.set_data(history_points, show_time=self.range_buttons.checkedId() in (30, 7))
 		self.graph_stack.setCurrentWidget(self.graph)
 		self.lbl_status.setText(
 			f"Weighted history is incomplete. Reviews without FSRS memory states: {missing_reviews:,}; "
@@ -697,22 +711,40 @@ class HistoryDialog(QDialog):
 		# word_states: word -> { cid -> { 'stability': float, 'decay': float, 'last_seen': timestamp_ms } }
 		word_states = {}
 		
-		history_points = []
-		missing_review_ids = set()
-		missing_card_ids = set()
+		# Each view holds its points and the missing states actually used by those points.
+		history_views = {days: ([], set(), set()) for days in (0, 365, 30, 7)}
 		
 		rev_cursor = 0
 		num_reviews = len(relevant_reviews)
 		
 		end_date = datetime.datetime.fromtimestamp(now_ts / 1000).date()
 		
-		# Sample completed local days at their end.
+		# Use daily snapshots for long views, hourly for the month and 15-minute for the week.
+		daily_samples = set()
 		for day_offset in range((end_date - start_date).days):
 			next_date = start_date + datetime.timedelta(days=day_offset + 1)
 			day_limit_ms = int(datetime.datetime.combine(next_date, datetime.time.min).timestamp() * 1000)
-			sample_ms = day_limit_ms - 1
+			daily_samples.add(day_limit_ms - 1)
+		year_start_ms = now_ts - 365 * 86400000
+		month_start_ms = max(first_ts, now_ts - 30 * 86400000)
+		first_hour_ms = math.ceil(month_start_ms / 3600000) * 3600000
+		hourly_samples = set(range(first_hour_ms, now_ts, 3600000))
+		week_start_ms = max(first_ts, now_ts - 7 * 86400000)
+		first_quarter_hour_ms = math.ceil(week_start_ms / 900000) * 900000
+		quarter_hour_samples = set(range(first_quarter_hour_ms, now_ts, 900000))
+
+		for sample_ms in sorted(daily_samples | hourly_samples | quarter_hour_samples):
+			sample_views = []
+			if sample_ms in daily_samples:
+				sample_views.append(history_views[0])
+				if sample_ms >= year_start_ms:
+					sample_views.append(history_views[365])
+			if sample_ms in hourly_samples:
+				sample_views.append(history_views[30])
+			if sample_ms in quarter_hour_samples:
+				sample_views.append(history_views[7])
 			
-			# Process reviews for this day
+			# Include earlier reviews when reconstructing the state at the sample time.
 			while rev_cursor < num_reviews:
 				rid, cid, studied, stability, decay = relevant_reviews[rev_cursor]
 				if rid > sample_ms:
@@ -732,7 +764,7 @@ class HistoryDialog(QDialog):
 						if not word_states[w]:
 							del word_states[w]
 			
-			# Calculate Daily Stats
+			# Calculate coverage at this sample time.
 			day_basic_active_mass = 0.0
 			day_basic_all_mass = 0.0
 			day_weighted_active_mass = 0.0
@@ -767,8 +799,9 @@ class HistoryDialog(QDialog):
 						factor = 0.9 ** (-1.0 / decay) - 1.0
 						r_val = (1.0 + factor * elapsed / stability) ** -decay
 					else:
-						missing_review_ids.add(last_seen)
-						missing_card_ids.add(cid)
+						for _, missing_review_ids, missing_card_ids in sample_views:
+							missing_review_ids.add(last_seen)
+							missing_card_ids.add(cid)
 					
 					if r_val > max_r_all:
 						max_r_all = r_val
@@ -786,7 +819,9 @@ class HistoryDialog(QDialog):
 			weighted_all_pct = min(100.0, (day_weighted_all_mass / total_mass) * 100)
 			
 			ts_display = sample_ms / 1000.0
-			history_points.append((ts_display, basic_pct, weighted_active_pct, basic_all_pct, weighted_all_pct))
+			point = (ts_display, basic_pct, weighted_active_pct, basic_all_pct, weighted_all_pct)
+			for history_points, _, _ in sample_views:
+				history_points.append(point)
 			
 		# Today's endpoint uses the main window's current-card rules.
 		known_query = f"{query} (is:learn OR is:review)"
@@ -796,15 +831,20 @@ class HistoryDialog(QDialog):
 		basic_all_mass = sum(_get_word_mass(w) for w in known_all)
 		weighted_active_mass = sum(_get_word_mass(w) * d['r'] for w, d in known_active.items())
 		weighted_all_mass = sum(_get_word_mass(w) * d['r'] for w, d in known_all.items())
-		history_points.append((
+		current_point = (
 			now_ts / 1000.0,
 			basic_mass / total_mass * 100,
 			weighted_active_mass / total_mass * 100,
 			basic_all_mass / total_mass * 100,
 			weighted_all_mass / total_mass * 100,
-		))
-		self.history_cache[self.card_type_mode] = (history_points, len(missing_review_ids), len(missing_card_ids))
-		self.show_history(*self.history_cache[self.card_type_mode])
+		)
+		for history_points, _, _ in history_views.values():
+			history_points.append(current_point)
+		self.history_cache[self.card_type_mode] = {
+			days: (points, len(missing_reviews), len(missing_cards))
+			for days, (points, missing_reviews, missing_cards) in history_views.items()
+		}
+		self.show_history(*self.history_cache[self.card_type_mode][self.range_buttons.checkedId()])
 
 
 class ChineseInfoDialog(QDialog):
