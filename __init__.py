@@ -1,6 +1,7 @@
 from aqt import mw, gui_hooks
 from aqt.qt import QAction, QDialog, QVBoxLayout, QLabel, QPushButton
 from aqt.utils import tooltip
+from anki.consts import CARD_TYPE_NEW
 from .data import (
 	get_word_data,
 	get_frequency_weight,
@@ -1190,7 +1191,10 @@ def on_card_will_show(card):
 	if card.note_type()['name'] != "chinese-word":
 		return
 	stats = mw.col.card_stats_data(card.id)
-	_pre_review_retrievabilities[card.id] = _get_card_retrievability(stats)
+	r_before = _get_card_retrievability(stats)
+	if card.type == CARD_TYPE_NEW:
+		r_before = 0.0
+	_pre_review_retrievabilities[card.id] = r_before
 
 
 def on_collection_operation(changes, initiator):
