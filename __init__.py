@@ -1228,10 +1228,13 @@ def on_card_reviewed(reviewer, card, ease):
 		delta = freq_weight * (r_after - r_before)
 		comprehension_change = delta / total_mass
 		if comprehension_change == 0:
-			change_text = "0"
+			change_text = "0 (0%)"
 		else:
 			sign = "+" if comprehension_change > 0 else "-"
-			change_text = f"{sign}1 / {readable_number(1 / abs(comprehension_change))}"
+			change_text = (
+				f"{sign}1 / {readable_number(1 / abs(comprehension_change))} "
+				f"({comprehension_change * 100:+#.2g}%)"
+			)
 
 	tooltip(f"Comprehension change: {change_text}<br>Days Gained: {delta_days:+.0f} (Session: {_session_gain:+.0f})")
 
