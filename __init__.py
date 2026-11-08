@@ -59,7 +59,7 @@ from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
-	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout, QButtonGroup
+	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout, QButtonGroup, QEvent, QApplication
 )
 
 class FrequencyGraph(QWidget):
@@ -93,13 +93,30 @@ class FrequencyGraph(QWidget):
 		self.update()
 
 	def mouseMoveEvent(self, event):
-		p = event.position()
-		px, py = p.x(), p.y()
+		self._show_tooltip(event.position(), event.globalPosition().toPoint())
+
+	def enterEvent(self, event):
+		super().enterEvent(event)
+		self._show_tooltip(event.position(), event.globalPosition().toPoint())
+
+	def leaveEvent(self, event):
+		QToolTip.hideText()
+		super().leaveEvent(event)
+
+	def event(self, event):
+		if event.type() == QEvent.Type.ToolTip:
+			if not self._show_tooltip(event.pos(), event.globalPos()):
+				event.ignore()
+			return True
+		return super().event(event)
+
+	def _show_tooltip(self, position, global_position):
+		px, py = position.x(), position.y()
 		tooltip_text = ""
 		
-		# Find if mouse is over any bar rect
+		# Each bucket is hoverable across the full plot height.
 		for rect, idx in self.bar_rects:
-			if rect.left() <= px <= rect.right() and rect.top() <= py <= rect.bottom():
+			if rect.left() <= px < rect.right() and rect.top() <= py < rect.bottom():
 				# Calculate stats for this bucket
 				count = self.bucket_counts[idx] if idx < len(self.bucket_counts) else 0
 				unrev_count = 0
@@ -141,9 +158,19 @@ class FrequencyGraph(QWidget):
 				break
 		
 		if tooltip_text:
-			QToolTip.showText(event.globalPosition().toPoint(), tooltip_text, self)
-		else:
-			QToolTip.hideText()
+			# Skip the first-show animation for this tooltip, then restore Qt's settings.
+			fade_enabled = QApplication.isEffectEnabled(Qt.UIEffect.UI_FadeTooltip)
+			animate_enabled = QApplication.isEffectEnabled(Qt.UIEffect.UI_AnimateTooltip)
+			try:
+				QApplication.setEffectEnabled(Qt.UIEffect.UI_FadeTooltip, False)
+				QApplication.setEffectEnabled(Qt.UIEffect.UI_AnimateTooltip, False)
+				QToolTip.showText(global_position, tooltip_text, self, rect.toAlignedRect())
+			finally:
+				QApplication.setEffectEnabled(Qt.UIEffect.UI_FadeTooltip, fade_enabled)
+				QApplication.setEffectEnabled(Qt.UIEffect.UI_AnimateTooltip, animate_enabled)
+			return True
+		QToolTip.hideText()
+		return False
 
 	def paintEvent(self, event):
 		painter = QPainter(self)
@@ -219,7 +246,7 @@ class FrequencyGraph(QWidget):
 				bar_bottom -= bar_h
 				if bar_h > 0:
 					painter.fillRect(QRectF(x, bar_bottom, draw_width, bar_h), color)
-			self.bar_rects.append((QRectF(x, bar_bottom, draw_width, bottom - bar_bottom), i))
+			self.bar_rects.append((QRectF(x, top, draw_width, graph_h), i))
 		painter.restore()
 		painter.setPen(text_color)
 		tick_y = bottom + fm.ascent() + 10
