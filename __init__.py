@@ -74,6 +74,7 @@ class FrequencyGraph(QWidget):
 		self.max_rank = 10000
 		self.hsk_mode = False
 		self.hsk_totals = {}
+		self.color_by_recency = False
 		self.bar_rects = [] # (rect, bucket_index)
 		self.setMinimumHeight(260)
 
@@ -91,6 +92,22 @@ class FrequencyGraph(QWidget):
 		self.simulated_counts = simulated_counts if simulated_counts else []
 		self.bucket_stats_list = bucket_stats_list if bucket_stats_list else []
 		self.update()
+
+	@staticmethod
+	def _recency_color(age):
+		if age is None:
+			return QColor("#7b8798")
+		age = min(365.0, max(0.0, age))
+		if age <= 1:
+			start, end = (255, 255, 255), (0, 191, 255)
+			fraction = age
+		elif age <= 7:
+			start, end = (0, 191, 255), (0, 0, 255)
+			fraction = (age - 1) / 6
+		else:
+			start, end = (0, 0, 255), (4, 17, 38)
+			fraction = math.log1p((age - 7) / 7) / math.log1p((365 - 7) / 7)
+		return QColor(*(round(a + (b - a) * fraction) for a, b in zip(start, end)))
 
 	def mouseMoveEvent(self, event):
 		self._show_tooltip(event.position(), event.globalPosition().toPoint())
@@ -144,10 +161,17 @@ class FrequencyGraph(QWidget):
 				
 				cov_k = stats.get('coverage_known', 0)
 				cov_t = stats.get('coverage_total', 0)
+				recency_text = ""
+				if self.color_by_recency:
+					ages = stats.get('introduction_ages', [])
+					recency_text = f"Introduced today: {ages.count(0)}<br>"
+					if None in ages:
+						recency_text += f"Unknown introduction date: {ages.count(None)}<br>"
 				
 				tooltip_text = (
 					f"<b>{label}</b><br>"
 					f"Known: {count} ({pct_known:.1f}%)<br>"
+					f"{recency_text}"
 					f"Including Unreviewed: {count + unrev_count} ({pct_total:.1f}%)<br>"
 					f"Avg Retrievability: {avg_r:.1f}%<br>"
 					f"Avg Stability: {avg_s:.1f} days<br>"
@@ -197,13 +221,25 @@ class FrequencyGraph(QWidget):
 
 		legend_x = padding
 		legend_y = padding + line_h + 10
-		for label, color in (("Studied", studied_color), ("Unreviewed", unreviewed_color), ("Simulated", simulated_color)):
-			entry_w = 16 + fm.horizontalAdvance(label)
+		studied_legend = (("Studied", studied_color),)
+		if self.color_by_recency:
+			gradient = QLinearGradient()
+			for age in range(366):
+				gradient.setColorAt(age / 365, self._recency_color(age))
+			studied_legend = (("Introduced: today → 365+ days", gradient),)
+			if any(None in stats.get('introduction_ages', []) for stats in self.bucket_stats_list):
+				studied_legend += (("Unknown date", self._recency_color(None)),)
+		for label, color in studied_legend + (("Unreviewed", unreviewed_color), ("Simulated", simulated_color)):
+			swatch_w = 96 if isinstance(color, QLinearGradient) else 10
+			entry_w = swatch_w + 6 + fm.horizontalAdvance(label)
 			if legend_x > padding and legend_x + entry_w > w - padding:
 				legend_x = padding
 				legend_y += line_h + 6
-			painter.fillRect(QRectF(legend_x, legend_y + (line_h - 10) / 2, 10, 10), color)
-			painter.drawText(legend_x + 16, legend_y + fm.ascent(), label)
+			if isinstance(color, QLinearGradient):
+				color.setStart(legend_x, 0)
+				color.setFinalStop(legend_x + swatch_w, 0)
+			painter.fillRect(QRectF(legend_x, legend_y + (line_h - 10) / 2, swatch_w, 10), QBrush(color))
+			painter.drawText(legend_x + swatch_w + 6, legend_y + fm.ascent(), label)
 			legend_x += entry_w + 22
 
 		left = max(58, fm.horizontalAdvance("100%") + 20)
@@ -241,9 +277,19 @@ class FrequencyGraph(QWidget):
 			next_x = left + round((i + 1) * bar_width)
 			draw_width = next_x - x
 			bar_bottom = float(bottom)
-			for amount, color in ((count, studied_color), (simulated, simulated_color), (unreviewed, unreviewed_color)):
-				bar_h = amount / total * graph_h
-				bar_bottom -= bar_h
+			parts = [(count, studied_color), (simulated, simulated_color), (unreviewed, unreviewed_color)]
+			if self.color_by_recency:
+				ages = self.bucket_stats_list[i].get('introduction_ages', [])
+				ages = sorted(ages, key=lambda age: float('inf') if age is None else age, reverse=True)
+				parts[:1] = [(1, self._recency_color(age)) for age in ages]
+			stacked = 0
+			for amount, color in parts:
+				stacked += amount
+				bar_top = bottom - stacked / total * graph_h
+				if self.color_by_recency:
+					bar_top = round(bar_top)
+				bar_h = bar_bottom - bar_top
+				bar_bottom = bar_top
 				if bar_h > 0:
 					painter.fillRect(QRectF(x, bar_bottom, draw_width, bar_h), color)
 			self.bar_rects.append((QRectF(x, top, draw_width, graph_h), i))
@@ -884,6 +930,8 @@ class ChineseInfoDialog(QDialog):
 		config = mw.addonManager.getConfig(__name__) or {}
 		init_bucket_size = config.get('graph_bucket_size', 100)
 		init_max_rank = config.get('graph_max_rank', 10000)
+		self.first_reviews = None
+		self.word_introductions = {}
 
 		layout = QVBoxLayout()
 		self.setLayout(layout)
@@ -917,6 +965,10 @@ class ChineseInfoDialog(QDialog):
 		self.check_unreviewed = QCheckBox("Show unreviewed")
 		self.check_unreviewed.stateChanged.connect(self.refresh_stats)
 		controls_layout.addWidget(self.check_unreviewed)
+		self.check_recency = QCheckBox("Color by introduction date")
+		self.check_recency.setToolTip("First recorded review of each word for the selected card type. White today, sky blue at 1 day, pure blue at 7 days, dark navy at 365+ days; gray if unknown.")
+		self.check_recency.toggled.connect(self.refresh_stats)
+		controls_layout.addWidget(self.check_recency)
 		controls_layout.addStretch()
 		layout.addLayout(controls_layout)
 
@@ -990,6 +1042,23 @@ class ChineseInfoDialog(QDialog):
 	def schedule_refresh(self):
 		self.debounce_timer.start()
 
+	def _get_word_introductions(self, card_type):
+		if card_type not in self.word_introductions:
+			col = mw.col
+			if self.first_reviews is None:
+				self.first_reviews = dict(col.db.all(
+					"SELECT cid, MIN(id) FROM revlog "
+					"WHERE ease > 0 AND NOT (type = 3 AND factor = 0) GROUP BY cid"
+				))
+			introductions = {}
+			for cid in col.find_cards(f"note:chinese-word card:{card_type}"):
+				first_review = self.first_reviews.get(cid)
+				if first_review is not None:
+					word = col.get_card(cid).note()['word']
+					introductions[word] = min(introductions.get(word, first_review), first_review)
+			self.word_introductions[card_type] = introductions
+		return self.word_introductions[card_type]
+
 	def refresh_stats(self):
 		self.debounce_timer.stop()
 		col = mw.col
@@ -1021,6 +1090,14 @@ class ChineseInfoDialog(QDialog):
 		
 		# Gather known words stats
 		known = _get_known_words(col, query_known)
+		self.graph.color_by_recency = self.check_recency.isChecked()
+		introduction_ages = {}
+		if self.graph.color_by_recency:
+			today = datetime.date.today()
+			introduction_ages = {
+				word: (today - datetime.datetime.fromtimestamp(timestamp / 1000.0).date()).days
+				for word, timestamp in self._get_word_introductions(card_type).items()
+			}
 
 		# Gather unreviewed words independently of graph visibility.
 		unreviewed_words = set()
@@ -1081,6 +1158,8 @@ class ChineseInfoDialog(QDialog):
 					b_idx = lvl - 1
 					s = get_bucket_stats(b_idx)
 					bucket_counts[b_idx] = bucket_counts.get(b_idx, 0) + 1
+					if self.graph.color_by_recency:
+						s.setdefault('introduction_ages', []).append(introduction_ages.get(word))
 					
 					s['sum_r'] += (d['r'] or 0) * 100
 					s['sum_s'] += d['s'] or 0
@@ -1124,6 +1203,8 @@ class ChineseInfoDialog(QDialog):
 						b_idx = (rank - 1) // bucket_size
 						s = get_bucket_stats(b_idx)
 						bucket_counts[b_idx] = bucket_counts.get(b_idx, 0) + 1
+						if self.graph.color_by_recency:
+							s.setdefault('introduction_ages', []).append(introduction_ages.get(word))
 						
 						s['sum_r'] += (d['r'] or 0) * 100
 						s['sum_s'] += d['s'] or 0
@@ -1185,6 +1266,7 @@ class ChineseInfoDialog(QDialog):
 			cov_sim = (s['mass_sim'] / total_mass * 100) if total_mass else 0
 			
 			stats_list.append({
+				'introduction_ages': s.get('introduction_ages', []),
 				'count_unreviewed': s.get('count_unreviewed', 0),
 				'avg_retrievability': avg_r, 
 				'avg_stability': avg_s,
