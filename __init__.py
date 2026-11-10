@@ -953,19 +953,23 @@ class ChineseInfoDialog(QDialog):
 		controls_layout.addWidget(QLabel("Card type"))
 		self.combo_card_type = QComboBox()
 		self.combo_card_type.addItems(["Define", "Pronounce"])
+		self.combo_card_type.setCurrentIndex(1 if config.get('graph_card_type') == 'hanzi-pronounce' else 0)
 		self.combo_card_type.currentIndexChanged.connect(self.refresh_stats)
 		controls_layout.addWidget(self.combo_card_type)
 		controls_layout.addSpacing(12)
 		controls_layout.addWidget(QLabel("Group by"))
 		self.combo_group = QComboBox()
 		self.combo_group.addItems(["Frequency", "HSK level"])
+		self.combo_group.setCurrentIndex(1 if config.get('graph_group_by') == 'hsk' else 0)
 		self.combo_group.currentIndexChanged.connect(self.refresh_stats)
 		controls_layout.addWidget(self.combo_group)
 		controls_layout.addSpacing(12)
 		self.check_unreviewed = QCheckBox("Show unreviewed")
+		self.check_unreviewed.setChecked(config.get('graph_show_unreviewed', False))
 		self.check_unreviewed.stateChanged.connect(self.refresh_stats)
 		controls_layout.addWidget(self.check_unreviewed)
 		self.check_recency = QCheckBox("Color by introduction date")
+		self.check_recency.setChecked(config.get('graph_color_by_recency', False))
 		self.check_recency.setToolTip("First recorded review of each word for the selected card type. White today, sky blue at 1 day, pure blue at 7 days, dark navy at 365+ days; gray if unknown.")
 		self.check_recency.toggled.connect(self.refresh_stats)
 		controls_layout.addWidget(self.check_recency)
@@ -996,7 +1000,7 @@ class ChineseInfoDialog(QDialog):
 		self.spin_sim = QSpinBox()
 		self.spin_sim.setRange(0, 5000)
 		self.spin_sim.setSingleStep(50)
-		self.spin_sim.setValue(0)
+		self.spin_sim.setValue(config.get('graph_simulate_words', 0))
 		self.spin_sim.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_sim)
 		for spin in (self.spin_bucket, self.spin_max_rank, self.spin_sim):
@@ -1024,8 +1028,25 @@ class ChineseInfoDialog(QDialog):
 		self.debounce_timer.setSingleShot(True)
 		self.debounce_timer.setInterval(400) 
 		self.debounce_timer.timeout.connect(self.refresh_stats)
+		self.finished.connect(self.save_settings)
 
 		self.refresh_stats()
+
+	def save_settings(self):
+		for spin in (self.spin_bucket, self.spin_max_rank, self.spin_sim):
+			spin.interpretText()
+		self.debounce_timer.stop()
+		config = mw.addonManager.getConfig(__name__) or {}
+		config.update({
+			'graph_card_type': 'hanzi-pronounce' if self.combo_card_type.currentIndex() == 1 else 'hanzi-define',
+			'graph_group_by': 'hsk' if self.combo_group.currentIndex() == 1 else 'frequency',
+			'graph_show_unreviewed': self.check_unreviewed.isChecked(),
+			'graph_color_by_recency': self.check_recency.isChecked(),
+			'graph_bucket_size': self.spin_bucket.value(),
+			'graph_max_rank': self.spin_max_rank.value(),
+			'graph_simulate_words': self.spin_sim.value(),
+		})
+		mw.addonManager.writeConfig(__name__, config)
 
 	def open_new_words(self):
 		use_pronounce = self.combo_card_type.currentIndex() == 1

@@ -1,4 +1,9 @@
 {
+    "graph_card_type": "hanzi-define",
+    "graph_group_by": "frequency",
+    "graph_show_unreviewed": false,
+    "graph_color_by_recency": false,
     "graph_bucket_size": 100,
-    "graph_max_rank": 10000
+    "graph_max_rank": 10000,
+    "graph_simulate_words": 0
 }
