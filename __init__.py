@@ -12,7 +12,24 @@ from .data import (
 	get_all_words,
 )
 import math
+import random
 import time
+from heapq import nsmallest
+from itertools import islice
+
+def _simulate_new_words(known, count, spread):
+	words = get_all_words()
+	if spread == 0:
+		return set(islice((word for word in words if word not in known), count))
+	slope = math.log(2) / (50 * 100 ** (spread / 100))
+	rng = random.Random(0)
+	def candidates():
+		for rank, word in enumerate(words, 1):
+			# Assign every rank a stable key, even when its word is already known.
+			u = (rng.getrandbits(32) + 0.5) / 4294967296
+			if word not in known:
+				yield math.log(-math.log(u)) + slope * rank, word
+	return {word for _, word in nsmallest(count, candidates())}
 
 _session_start_ms = int(time.time() * 1000)
 _session_gain = 0.0
@@ -57,7 +74,7 @@ def on_update_all():
 import datetime
 from bisect import bisect_left
 from aqt.qt import (
-	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
+	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox, QSlider,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
 	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout, QButtonGroup, QEvent, QApplication
 )
@@ -1003,6 +1020,19 @@ class ChineseInfoDialog(QDialog):
 		self.spin_sim.setValue(config.get('graph_simulate_words', 0))
 		self.spin_sim.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_sim)
+		controls_layout.addWidget(QLabel("Spread"))
+		self.slider_spread = QSlider(Qt.Orientation.Horizontal)
+		self.slider_spread.setRange(0, 100)
+		self.slider_spread.setValue(config.get('graph_simulation_spread', 0))
+		self.slider_spread.setFixedWidth(120)
+		self.slider_spread.setAccessibleName("Simulation spread")
+		self.slider_spread.setToolTip("0% selects the next unknown words in rank order. Higher values spread them across later frequency ranks, including ranks beyond the visible graph.")
+		controls_layout.addWidget(self.slider_spread)
+		self.lbl_spread_value = QLabel(f"{self.slider_spread.value()}%")
+		self.lbl_spread_value.setMinimumWidth(self.lbl_spread_value.fontMetrics().horizontalAdvance("100%"))
+		controls_layout.addWidget(self.lbl_spread_value)
+		self.slider_spread.valueChanged.connect(lambda value: self.lbl_spread_value.setText(f"{value}%"))
+		self.slider_spread.valueChanged.connect(self.schedule_refresh)
 		for spin in (self.spin_bucket, self.spin_max_rank, self.spin_sim):
 			spin.setGroupSeparatorShown(True)
 		input_width = self.spin_max_rank.sizeHint().width()
@@ -1045,6 +1075,7 @@ class ChineseInfoDialog(QDialog):
 			'graph_bucket_size': self.spin_bucket.value(),
 			'graph_max_rank': self.spin_max_rank.value(),
 			'graph_simulate_words': self.spin_sim.value(),
+			'graph_simulation_spread': self.slider_spread.value(),
 		})
 		mw.addonManager.writeConfig(__name__, config)
 
@@ -1134,14 +1165,7 @@ class ChineseInfoDialog(QDialog):
 		# Simulate learning new words
 		simulated_words = set()
 		if sim_new_count > 0:
-			all_sorted_words = get_all_words()
-			count_added = 0
-			for w_sim in all_sorted_words:
-				if count_added >= sim_new_count:
-					break
-				if w_sim not in known:
-					simulated_words.add(w_sim)
-					count_added += 1
+			simulated_words = _simulate_new_words(known, sim_new_count, self.slider_spread.value())
 
 		total_mass = get_total_frequency_mass()
 		basic_mass = sum(get_mass(w) for w in known)
