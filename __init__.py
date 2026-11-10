@@ -7,6 +7,7 @@ from .data import (
 	get_frequency_weight,
 	get_total_frequency_mass,
 	get_frequency_rank,
+	get_frequency_level,
 	get_hsk_counts,
 	get_hsk_level,
 	get_all_words,
@@ -16,6 +17,8 @@ import random
 import time
 from heapq import nsmallest
 from itertools import islice
+
+_FREQUENCY_LEVEL_RANGES = tuple((100 * (2 ** (level - 1) - 1) + 1, 100 * (2 ** level - 1)) for level in range(1, 7))
 
 def _simulate_new_words(known, count, spread):
 	words = get_all_words()
@@ -89,8 +92,8 @@ class FrequencyGraph(QWidget):
 		self.bucket_stats_list = []
 		self.bucket_size = 100
 		self.max_rank = 10000
-		self.hsk_mode = False
-		self.hsk_totals = {}
+		self.group_mode = "frequency"
+		self.level_totals = {}
 		self.color_by_recency = False
 		self.bar_rects = [] # (rect, bucket_index)
 		self.setMinimumHeight(260)
@@ -99,9 +102,9 @@ class FrequencyGraph(QWidget):
 		self.bucket_size = bucket_size
 		self.max_rank = max_rank
 
-	def set_hsk_mode(self, enabled, totals=None):
-		self.hsk_mode = enabled
-		self.hsk_totals = totals or {}
+	def set_group_mode(self, mode, totals=None):
+		self.group_mode = mode
+		self.level_totals = totals or {}
 
 	def set_data(self, bucket_counts, unreviewed_counts=None, simulated_counts=None, bucket_stats_list=None):
 		self.bucket_counts = bucket_counts
@@ -159,9 +162,13 @@ class FrequencyGraph(QWidget):
 				stats = self.bucket_stats_list[idx] if idx < len(self.bucket_stats_list) else {}
 				unrev_count = stats.get('count_unreviewed', unrev_count)
 				
-				if self.hsk_mode:
-					label = f"HSK {idx + 1}"
-					total_in_bucket = self.hsk_totals.get(idx + 1, 1)
+				if self.group_mode != "frequency":
+					prefix = "HSK" if self.group_mode == "hsk" else "Frequency level"
+					label = f"{prefix} {idx + 1}"
+					if self.group_mode == "frequency_level":
+						start_rank, end_rank = _FREQUENCY_LEVEL_RANGES[idx]
+						label += f" · ranks {start_rank:,}–{end_rank:,}"
+					total_in_bucket = self.level_totals.get(idx + 1, 1)
 				else:
 					start_rank = idx * self.bucket_size + 1
 					end_rank = (idx + 1) * self.bucket_size
@@ -233,7 +240,7 @@ class FrequencyGraph(QWidget):
 		simulated_color = QColor("#b05ac3" if dark else "#9c27b0")
 		painter.fillRect(self.rect(), background)
 		painter.setPen(text_color)
-		title = "Words by HSK level" if self.hsk_mode else "Words by frequency"
+		title = {"frequency": "Words by frequency", "hsk": "Words by HSK level", "frequency_level": "Words by frequency level"}[self.group_mode]
 		painter.drawText(padding, padding + fm.ascent(), title)
 
 		legend_x = padding
@@ -262,6 +269,8 @@ class FrequencyGraph(QWidget):
 		left = max(58, fm.horizontalAdvance("100%") + 20)
 		top = legend_y + line_h * 2 + 18
 		bottom = h - line_h * 2 - padding - 14
+		if self.group_mode == "frequency_level":
+			bottom -= line_h
 		graph_w = w - left - padding
 		graph_h = bottom - top
 		self.bar_rects = []
@@ -286,7 +295,7 @@ class FrequencyGraph(QWidget):
 		painter.setClipRect(plot_rect)
 		painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 		for i, count in enumerate(self.bucket_counts):
-			total = self.hsk_totals.get(i + 1, 1) if self.hsk_mode else self.bucket_size
+			total = self.level_totals.get(i + 1, 1) if self.group_mode != "frequency" else self.bucket_size
 			total = max(1, total)
 			unreviewed = self.unreviewed_counts[i] if i < len(self.unreviewed_counts) else 0
 			simulated = self.simulated_counts[i] if i < len(self.simulated_counts) else 0
@@ -313,12 +322,18 @@ class FrequencyGraph(QWidget):
 		painter.restore()
 		painter.setPen(text_color)
 		tick_y = bottom + fm.ascent() + 10
-		if self.hsk_mode:
-			axis_label = "HSK level"
+		if self.group_mode != "frequency":
+			axis_label = "HSK level" if self.group_mode == "hsk" else "Frequency level"
+			prefix = "HSK" if self.group_mode == "hsk" else "Level"
 			for i in range(num_buckets):
-				label = f"HSK {i + 1}" if bar_width > fm.horizontalAdvance("HSK 6") + 8 else str(i + 1)
+				label = f"{prefix} {i + 1}" if bar_width > fm.horizontalAdvance(f"{prefix} 6") + 8 else str(i + 1)
 				x = left + (i + 0.5) * bar_width - fm.horizontalAdvance(label) / 2
 				painter.drawText(int(x), tick_y, label)
+				if self.group_mode == "frequency_level":
+					start_rank, end_rank = _FREQUENCY_LEVEL_RANGES[i]
+					range_label = f"{max(1, start_rank - 1):,}–{end_rank:,}"
+					x = left + (i + 0.5) * bar_width - fm.horizontalAdvance(range_label) / 2
+					painter.drawText(int(x), tick_y + line_h, range_label)
 		else:
 			axis_label = f"Frequency rank · {self.bucket_size:,} words per bucket"
 			end_label = f"{num_buckets * self.bucket_size:,}"
@@ -976,8 +991,10 @@ class ChineseInfoDialog(QDialog):
 		controls_layout.addSpacing(12)
 		controls_layout.addWidget(QLabel("Group by"))
 		self.combo_group = QComboBox()
-		self.combo_group.addItems(["Frequency", "HSK level"])
-		self.combo_group.setCurrentIndex(1 if config.get('graph_group_by') == 'hsk' else 0)
+		self.combo_group.addItem("Frequency", "frequency")
+		self.combo_group.addItem("HSK level", "hsk")
+		self.combo_group.addItem("Frequency level", "frequency_level")
+		self.combo_group.setCurrentIndex(max(0, self.combo_group.findData(config.get('graph_group_by', 'frequency'))))
 		self.combo_group.currentIndexChanged.connect(self.refresh_stats)
 		controls_layout.addWidget(self.combo_group)
 		controls_layout.addSpacing(12)
@@ -1069,7 +1086,7 @@ class ChineseInfoDialog(QDialog):
 		config = mw.addonManager.getConfig(__name__) or {}
 		config.update({
 			'graph_card_type': 'hanzi-pronounce' if self.combo_card_type.currentIndex() == 1 else 'hanzi-define',
-			'graph_group_by': 'hsk' if self.combo_group.currentIndex() == 1 else 'frequency',
+			'graph_group_by': self.combo_group.currentData(),
 			'graph_show_unreviewed': self.check_unreviewed.isChecked(),
 			'graph_color_by_recency': self.check_recency.isChecked(),
 			'graph_bucket_size': self.spin_bucket.value(),
@@ -1116,24 +1133,23 @@ class ChineseInfoDialog(QDialog):
 		col = mw.col
 		use_pronounce = self.combo_card_type.currentIndex() == 1
 		show_unreviewed = self.check_unreviewed.isChecked()
-		show_hsk = self.combo_group.currentIndex() == 1
+		group_mode = self.combo_group.currentData()
+		show_levels = group_mode != "frequency"
 		bucket_size = self.spin_bucket.value()
 		max_rank_cutoff = self.spin_max_rank.value()
 		sim_new_count = self.spin_sim.value()
 
-		self.spin_bucket.setVisible(not show_hsk)
-		self.spin_max_rank.setVisible(not show_hsk)
-		self.lbl_bucket.setVisible(not show_hsk)
-		self.lbl_rank.setVisible(not show_hsk)
-		# Simulation only makes sense in Frequency Rank mode usually, but can work for HSK too
-
-
-		hsk_totals = {}
-		if show_hsk:
-			hsk_totals = get_hsk_counts()
-			self.graph.set_hsk_mode(True, hsk_totals)
-		else:
-			self.graph.set_hsk_mode(False)
+		self.spin_bucket.setVisible(not show_levels)
+		self.spin_max_rank.setVisible(not show_levels)
+		self.lbl_bucket.setVisible(not show_levels)
+		self.lbl_rank.setVisible(not show_levels)
+		level_totals = {}
+		if group_mode == "hsk":
+			level_totals = get_hsk_counts()
+		elif group_mode == "frequency_level":
+			level_totals = {level: end - start + 1 for level, (start, end) in enumerate(_FREQUENCY_LEVEL_RANGES, 1)}
+		self.graph.set_group_mode(group_mode, level_totals)
+		if not show_levels:
 			self.graph.set_config(bucket_size, max_rank_cutoff)
 
 		card_type = "hanzi-pronounce" if use_pronounce else "hanzi-define"
@@ -1195,10 +1211,10 @@ class ChineseInfoDialog(QDialog):
 				bucket_stats[idx] = {'sum_r': 0.0, 'sum_s': 0.0, 'count_known': 0, 'mass_known': 0.0, 'mass_total': 0.0, 'mass_sim': 0.0}
 			return bucket_stats[idx]
 
-		if show_hsk:
-			# HSK Mode
+		if show_levels:
+			get_level = get_hsk_level if group_mode == "hsk" else get_frequency_level
 			for word, d in known.items():
-				lvl = get_hsk_level(word)
+				lvl = get_level(word)
 				if lvl and 1 <= lvl <= 6:
 					b_idx = lvl - 1
 					s = get_bucket_stats(b_idx)
@@ -1215,7 +1231,7 @@ class ChineseInfoDialog(QDialog):
 					s['mass_total'] += w_mass
 
 			for word in unreviewed_words:
-				lvl = get_hsk_level(word)
+				lvl = get_level(word)
 				if lvl and 1 <= lvl <= 6:
 					b_idx = lvl - 1
 					s = get_bucket_stats(b_idx)
@@ -1228,7 +1244,7 @@ class ChineseInfoDialog(QDialog):
 
 			if simulated_words:
 				for word in simulated_words:
-					lvl = get_hsk_level(word)
+					lvl = get_level(word)
 					if lvl and 1 <= lvl <= 6:
 						b_idx = lvl - 1
 						s = get_bucket_stats(b_idx)
@@ -1336,7 +1352,7 @@ class ChineseInfoDialog(QDialog):
 		for row in rows:
 			info_text += "<tr>" + "".join(f"<td width='25%'>{cell}</td>" for cell in row) + "</tr>"
 		info_text += "</table>"
-		if not show_hsk:
+		if not show_levels:
 			info_text += f"<p style='margin-top:6px; margin-bottom:0'>Highest rank: {max_rank_found:,} · Graph limit: {max_rank_cutoff:,}</p>"
 		self.stats_label.setText(info_text)
 
