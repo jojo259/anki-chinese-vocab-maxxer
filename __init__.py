@@ -1159,13 +1159,13 @@ class ChineseInfoDialog(QDialog):
 		# Gather known words stats
 		known = _get_known_words(col, query_known)
 		self.graph.color_by_recency = self.check_recency.isChecked()
-		introduction_ages = {}
-		if self.graph.color_by_recency:
-			today = datetime.date.today()
-			introduction_ages = {
-				word: (today - datetime.datetime.fromtimestamp(timestamp / 1000.0).date()).days
-				for word, timestamp in self._get_word_introductions(card_type).items()
-			}
+		today = datetime.date.today()
+		introduction_ages = {
+			word: (today - datetime.datetime.fromtimestamp(timestamp / 1000.0).date()).days
+			for word, timestamp in self._get_word_introductions(card_type).items()
+		}
+		introduced_today = sum(introduction_ages.get(word) == 0 for word in known)
+		introduced_per_day = sum(0 <= introduction_ages.get(word, 7) < 7 for word in known) / 7
 
 		# Gather unreviewed words independently of graph visibility.
 		unreviewed_words = set()
@@ -1339,18 +1339,18 @@ class ChineseInfoDialog(QDialog):
 		self.graph.set_data(data_list, unrev_list if show_unreviewed else None, sim_list, stats_list)
 		
 		today_val = self._calc_todays_gain()
-		labels = ("Frequency coverage", "Recall-weighted", "Words studied", "Today's interval gain")
-		values = (f"{basic_perc:.3g}%", f"{retrieval_perc:.3g}%", f"{len(known):,}", f"{today_val:+,.0f} days")
+		labels = ("Frequency coverage", "Recall-weighted", "Words studied", "Today's interval gain", "Introduced today", "Introduced per day (7d)")
+		values = (f"{basic_perc:.3g}%", f"{retrieval_perc:.3g}%", f"{len(known):,}", f"{today_val:+,.0f} days", f"{introduced_today:,}", f"{introduced_per_day:,.1f}")
 		rows = [labels, tuple(f"<span style='font-size:large'>{value}</span>" for value in values)]
 		if sim_new_count > 0:
 			rows.append((
 				f"+{basic_perc_w_sim - basic_perc:.3g}% → {basic_perc_w_sim:.3g}%",
 				f"+{retrieval_perc_sim - retrieval_perc:.3g}% → {retrieval_perc_sim:.3g}%",
-				f"+{len(simulated_words):,} simulated", "",
+				f"+{len(simulated_words):,} simulated", "", "", "",
 			))
 		info_text = "<table width='100%' cellspacing='0' cellpadding='0'>"
 		for row in rows:
-			info_text += "<tr>" + "".join(f"<td width='25%'>{cell}</td>" for cell in row) + "</tr>"
+			info_text += "<tr>" + "".join(f"<td width='{100 / len(labels):.3f}%'>{cell}</td>" for cell in row) + "</tr>"
 		info_text += "</table>"
 		if not show_levels:
 			info_text += f"<p style='margin-top:6px; margin-bottom:0'>Highest rank: {max_rank_found:,} · Graph limit: {max_rank_cutoff:,}</p>"
