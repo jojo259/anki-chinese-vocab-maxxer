@@ -1504,6 +1504,7 @@ def add_tools_menu():
 	act1.triggered.connect(on_update_all)
 	menu.addAction(act1)
 	act2 = QAction("Chinese words info", mw)
+	act2.setShortcut("Ctrl+G")
 	act2.triggered.connect(on_info)
 	menu.addAction(act2)
 
