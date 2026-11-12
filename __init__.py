@@ -79,10 +79,12 @@ from bisect import bisect_left
 from aqt.qt import (
 	QAction, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox, QSlider,
 	QWidget, QPainter, QColor, Qt, QBrush, QPen, QRectF, QTimer, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip,
-	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout, QButtonGroup, QEvent, QApplication
+	QPainterPath, QPointF, QLinearGradient, QComboBox, QSizePolicy, QStackedWidget, QGridLayout, QButtonGroup, QEvent, QApplication, pyqtSignal
 )
 
 class FrequencyGraph(QWidget):
+	plot_size_changed = pyqtSignal()
+
 	def __init__(self, parent=None):
 		super().__init__(parent)
 		self.setMouseTracking(True)
@@ -91,6 +93,7 @@ class FrequencyGraph(QWidget):
 		self.simulated_counts = []
 		self.bucket_stats_list = []
 		self.bucket_size = 100
+		self.plot_size = None
 		self.max_rank = 10000
 		self.group_mode = "frequency"
 		self.level_totals = {}
@@ -171,7 +174,7 @@ class FrequencyGraph(QWidget):
 					total_in_bucket = self.level_totals.get(idx + 1, 1)
 				else:
 					start_rank = idx * self.bucket_size + 1
-					end_rank = (idx + 1) * self.bucket_size
+					end_rank = min((idx + 1) * self.bucket_size, self.max_rank)
 					label = f"Freq Rank: {start_rank} - {end_rank}"
 					total_in_bucket = self.bucket_size
 				
@@ -276,6 +279,9 @@ class FrequencyGraph(QWidget):
 		self.bar_rects = []
 		if graph_w <= 0 or graph_h <= 0:
 			return
+		if self.plot_size != (graph_w, graph_h):
+			self.plot_size = (graph_w, graph_h)
+			self.plot_size_changed.emit()
 		plot_rect = QRectF(left, top, graph_w, graph_h)
 		painter.fillRect(plot_rect, plot_color)
 		painter.drawText(left, top - 12, "Studied words (%)")
@@ -336,7 +342,7 @@ class FrequencyGraph(QWidget):
 					painter.drawText(int(x), tick_y + line_h, range_label)
 		else:
 			axis_label = f"Frequency rank · {self.bucket_size:,} words per bucket"
-			end_label = f"{num_buckets * self.bucket_size:,}"
+			end_label = f"{self.max_rank:,}"
 			end_x = left + graph_w - fm.horizontalAdvance(end_label)
 			min_gap = max(72, fm.horizontalAdvance(end_label) + 20)
 			step = max(1, math.ceil(num_buckets / max(1, graph_w // min_gap)))
@@ -1014,11 +1020,16 @@ class ChineseInfoDialog(QDialog):
 		self.lbl_bucket = QLabel("Bucket size")
 		controls_layout.addWidget(self.lbl_bucket)
 		self.spin_bucket = QSpinBox()
-		self.spin_bucket.setRange(10, 5000)
+		self.spin_bucket.setRange(1, 5000)
 		self.spin_bucket.setSingleStep(10)
 		self.spin_bucket.setValue(init_bucket_size)
 		self.spin_bucket.valueChanged.connect(self.schedule_refresh)
 		controls_layout.addWidget(self.spin_bucket)
+		self.check_auto_square = QCheckBox("Auto square cells")
+		self.check_auto_square.setChecked(config.get('graph_auto_square_cells', False))
+		self.check_auto_square.setToolTip("Adjust bucket size to make each word's cell approximately square when the graph is resized. Frequency grouping only.")
+		self.check_auto_square.toggled.connect(self.refresh_stats)
+		controls_layout.addWidget(self.check_auto_square)
 
 		self.lbl_rank = QLabel("Max rank")
 		controls_layout.addWidget(self.lbl_rank)
@@ -1075,11 +1086,17 @@ class ChineseInfoDialog(QDialog):
 		self.debounce_timer.setSingleShot(True)
 		self.debounce_timer.setInterval(400) 
 		self.debounce_timer.timeout.connect(self.refresh_stats)
+		self.auto_bucket_timer = QTimer(self)
+		self.auto_bucket_timer.setSingleShot(True)
+		self.auto_bucket_timer.setInterval(150)
+		self.auto_bucket_timer.timeout.connect(self.update_auto_bucket)
+		self.graph.plot_size_changed.connect(self.schedule_auto_bucket)
 		self.finished.connect(self.save_settings)
 
 		self.refresh_stats()
 
 	def save_settings(self):
+		self.auto_bucket_timer.stop()
 		for spin in (self.spin_bucket, self.spin_max_rank, self.spin_sim):
 			spin.interpretText()
 		self.debounce_timer.stop()
@@ -1090,6 +1107,7 @@ class ChineseInfoDialog(QDialog):
 			'graph_show_unreviewed': self.check_unreviewed.isChecked(),
 			'graph_color_by_recency': self.check_recency.isChecked(),
 			'graph_bucket_size': self.spin_bucket.value(),
+			'graph_auto_square_cells': self.check_auto_square.isChecked(),
 			'graph_max_rank': self.spin_max_rank.value(),
 			'graph_simulate_words': self.spin_sim.value(),
 			'graph_simulation_spread': self.slider_spread.value(),
@@ -1111,6 +1129,24 @@ class ChineseInfoDialog(QDialog):
 	def schedule_refresh(self):
 		self.debounce_timer.start()
 
+	def schedule_auto_bucket(self):
+		if self.check_auto_square.isChecked() and self.combo_group.currentData() == "frequency":
+			self.auto_bucket_timer.start()
+
+	def update_auto_bucket(self):
+		if (not self.check_auto_square.isChecked() or self.combo_group.currentData() != "frequency"
+			or self.debounce_timer.isActive() or self.graph.plot_size is None):
+			return
+		width, height = self.graph.plot_size
+		max_rank = self.spin_max_rank.value()
+		bucket_size = min(range(self.spin_bucket.minimum(), self.spin_bucket.maximum() + 1),
+			key=lambda size: abs(math.log(width * size / (height * math.ceil(max_rank / size)))))
+		if bucket_size != self.spin_bucket.value():
+			blocked = self.spin_bucket.blockSignals(True)
+			self.spin_bucket.setValue(bucket_size)
+			self.spin_bucket.blockSignals(blocked)
+			self.refresh_stats(reuse_data=True)
+
 	def _get_word_introductions(self, card_type):
 		if card_type not in self.word_introductions:
 			col = mw.col
@@ -1128,7 +1164,7 @@ class ChineseInfoDialog(QDialog):
 			self.word_introductions[card_type] = introductions
 		return self.word_introductions[card_type]
 
-	def refresh_stats(self):
+	def refresh_stats(self, *, reuse_data=False):
 		self.debounce_timer.stop()
 		col = mw.col
 		use_pronounce = self.combo_card_type.currentIndex() == 1
@@ -1140,6 +1176,8 @@ class ChineseInfoDialog(QDialog):
 		sim_new_count = self.spin_sim.value()
 
 		self.spin_bucket.setVisible(not show_levels)
+		self.check_auto_square.setVisible(not show_levels)
+		self.spin_bucket.setEnabled(not self.check_auto_square.isChecked() or show_levels)
 		self.spin_max_rank.setVisible(not show_levels)
 		self.lbl_bucket.setVisible(not show_levels)
 		self.lbl_rank.setVisible(not show_levels)
@@ -1156,32 +1194,34 @@ class ChineseInfoDialog(QDialog):
 		query_base = f"note:chinese-word card:{card_type} -is:suspended"
 		query_known = f"{query_base} (is:learn OR is:review)"
 		
-		# Gather known words stats
-		known = _get_known_words(col, query_known)
 		self.graph.color_by_recency = self.check_recency.isChecked()
-		today = datetime.date.today()
-		introduction_ages = {
-			word: (today - datetime.datetime.fromtimestamp(timestamp / 1000.0).date()).days
-			for word, timestamp in self._get_word_introductions(card_type).items()
-		}
+		if not reuse_data:
+			# Gather known words stats
+			known = _get_known_words(col, query_known)
+			today = datetime.date.today()
+			introduction_ages = {
+				word: (today - datetime.datetime.fromtimestamp(timestamp / 1000.0).date()).days
+				for word, timestamp in self._get_word_introductions(card_type).items()
+			}
+
+			# Gather unreviewed words independently of graph visibility.
+			unreviewed_words = set()
+			for cid in col.find_cards(query_base):
+				card = col.get_card(cid)
+				note = card.note()
+				w = note['word']
+				if w not in known:
+					unreviewed_words.add(w)
+
+			# Simulate learning new words
+			simulated_words = set()
+			if sim_new_count > 0:
+				simulated_words = _simulate_new_words(known, sim_new_count, self.slider_spread.value())
+			self.graph_inputs = (known, introduction_ages, unreviewed_words, simulated_words, self._calc_todays_gain())
+		known, introduction_ages, unreviewed_words, simulated_words, today_val = self.graph_inputs
 		introduced_today = sum(introduction_ages.get(word) == 0 for word in known)
 		introduced_per_day = sum(0 <= introduction_ages.get(word, 7) < 7 for word in known) / 7
-
-		# Gather unreviewed words independently of graph visibility.
-		unreviewed_words = set()
-		for cid in col.find_cards(query_base):
-			card = col.get_card(cid)
-			note = card.note()
-			w = note['word']
-			if w not in known:
-				unreviewed_words.add(w)
-
 		get_mass = _get_word_mass
-
-		# Simulate learning new words
-		simulated_words = set()
-		if sim_new_count > 0:
-			simulated_words = _simulate_new_words(known, sim_new_count, self.slider_spread.value())
 
 		total_mass = get_total_frequency_mass()
 		basic_mass = sum(get_mass(w) for w in known)
@@ -1300,7 +1340,7 @@ class ChineseInfoDialog(QDialog):
 							w_mass = get_mass(word)
 							s['mass_sim'] += w_mass
 
-			total_buckets_needed = max_rank_cutoff // bucket_size
+			total_buckets_needed = math.ceil(max_rank_cutoff / bucket_size)
 		
 		data_list = [0] * total_buckets_needed
 		unrev_list = [0] * total_buckets_needed
@@ -1338,7 +1378,6 @@ class ChineseInfoDialog(QDialog):
 		
 		self.graph.set_data(data_list, unrev_list if show_unreviewed else None, sim_list, stats_list)
 		
-		today_val = self._calc_todays_gain()
 		labels = ("Frequency coverage", "Recall-weighted", "Words studied", "Today's interval gain", "Introduced today", "Introduced per day (7d)")
 		values = (f"{basic_perc:.3g}%", f"{retrieval_perc:.3g}%", f"{len(known):,}", f"{today_val:+,.0f} days", f"{introduced_today:,}", f"{introduced_per_day:,.1f}")
 		rows = [labels, tuple(f"<span style='font-size:large'>{value}</span>" for value in values)]
@@ -1355,6 +1394,8 @@ class ChineseInfoDialog(QDialog):
 		if not show_levels:
 			info_text += f"<p style='margin-top:6px; margin-bottom:0'>Highest rank: {max_rank_found:,} · Graph limit: {max_rank_cutoff:,}</p>"
 		self.stats_label.setText(info_text)
+		if not reuse_data:
+			self.schedule_auto_bucket()
 
 	def _calc_todays_gain(self):
 		day_start_ms = (mw.col.sched.day_cutoff - 86400) * 1000

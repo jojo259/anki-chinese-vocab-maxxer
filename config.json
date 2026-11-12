@@ -4,6 +4,7 @@
     "graph_show_unreviewed": false,
     "graph_color_by_recency": false,
     "graph_bucket_size": 100,
+    "graph_auto_square_cells": false,
     "graph_max_rank": 10000,
     "graph_simulate_words": 0,
     "graph_simulation_spread": 0
