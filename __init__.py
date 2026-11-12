@@ -12,6 +12,7 @@ from .data import (
 	get_hsk_level,
 	get_all_words,
 )
+from .duplicates import setup_duplicate_warning
 import math
 import random
 import time
@@ -1512,3 +1513,5 @@ gui_hooks.main_window_did_init.append(add_tools_menu)
 gui_hooks.reviewer_did_show_question.append(on_card_will_show)
 gui_hooks.reviewer_did_answer_card.append(on_card_reviewed)
 gui_hooks.operation_did_execute.append(on_collection_operation)
+
+setup_duplicate_warning()
