@@ -63,9 +63,8 @@ def cedict_to_diacritic(pinyin: str) -> str:
 	return ''.join(result)
 
 @lru_cache(maxsize=None)
-def _build_cedict_maps():
-	pmap = defaultdict(list)
-	dmap = defaultdict(list)
+def _build_cedict_groups():
+	groups = defaultdict(dict)
 	with CEDICT_PATH.open(encoding='utf-8') as f:
 		for ln in f:
 			if ln.startswith('#'):
@@ -79,24 +78,23 @@ def _build_cedict_maps():
 			trad, simp, rest = parts
 			pin = cedict_to_diacritic(rest.split(']')[0][1:])
 			defs = rest.split(']', 1)[1][2:-1].replace('/', '; ')
-			pmap[simp].append(pin.lower())
-			dmap[simp].append(defs)
-	return pmap, dmap
+			groups[simp].setdefault(pin, []).append(defs)
+	return groups
 
-_PINYIN_MAP, _DEF_MAP = _build_cedict_maps()
+_CEDICT_GROUPS = _build_cedict_groups()
 
 @lru_cache(maxsize=None)
 def get_definitions(word: str):
-	defs = _DEF_MAP.get(word)
-	if defs:
-		return ' / '.join(defs)
+	readings = _CEDICT_GROUPS.get(word)
+	if readings:
+		return ' / '.join(' • '.join(entries) for entries in readings.values())
 	return None
 
 @lru_cache(maxsize=None)
 def get_pinyin(word: str):
-	pins = _PINYIN_MAP.get(word)
-	if pins:
-		return ' / '.join(pins)
+	readings = _CEDICT_GROUPS.get(word)
+	if readings:
+		return ' / '.join(readings)
 	return None
 
 @lru_cache(maxsize=None)
