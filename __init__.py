@@ -1011,7 +1011,7 @@ class ChineseInfoDialog(QDialog):
 		controls_layout.addWidget(self.check_unreviewed)
 		self.check_recency = QCheckBox("Color by introduction date")
 		self.check_recency.setChecked(config.get('graph_color_by_recency', False))
-		self.check_recency.setToolTip("First recorded review of each word for the selected card type. White today, sky blue at 1 day, pure blue at 7 days, dark navy at 365+ days; gray if unknown.")
+		self.check_recency.setToolTip("First recorded review of each word for the selected card type. Days follow Anki's rollover. White today, sky blue at 1 day, pure blue at 7 days, dark navy at 365+ days; gray if unknown.")
 		self.check_recency.toggled.connect(self.refresh_stats)
 		controls_layout.addWidget(self.check_recency)
 		controls_layout.addStretch()
@@ -1199,11 +1199,17 @@ class ChineseInfoDialog(QDialog):
 		if not reuse_data:
 			# Gather known words stats
 			known = _get_known_words(col, query_known)
-			today = datetime.date.today()
+			introductions = self._get_word_introductions(card_type)
+			day_ms = 86_400_000
+			next_day_ms = col.sched.day_cutoff * 1000
+			day_start_ms = next_day_ms - day_ms
 			introduction_ages = {
-				word: (today - datetime.datetime.fromtimestamp(timestamp / 1000.0).date()).days
-				for word, timestamp in self._get_word_introductions(card_type).items()
+				word: (next_day_ms - 1 - timestamp) // day_ms
+				for word, timestamp in introductions.items()
+				if word in known and timestamp < next_day_ms
 			}
+			introduced_today = sum(age == 0 for age in introduction_ages.values())
+			introduced_per_day = sum(age < 7 for age in introduction_ages.values()) / 7
 
 			# Gather unreviewed words independently of graph visibility.
 			unreviewed_words = set()
@@ -1218,10 +1224,15 @@ class ChineseInfoDialog(QDialog):
 			simulated_words = set()
 			if sim_new_count > 0:
 				simulated_words = _simulate_new_words(known, sim_new_count, self.slider_spread.value())
-			self.graph_inputs = (known, introduction_ages, unreviewed_words, simulated_words, self._calc_todays_gain())
-		known, introduction_ages, unreviewed_words, simulated_words, today_val = self.graph_inputs
-		introduced_today = sum(introduction_ages.get(word) == 0 for word in known)
-		introduced_per_day = sum(0 <= introduction_ages.get(word, 7) < 7 for word in known) / 7
+			today_val = _calc_interval_gain(day_start_ms)
+			self.graph_inputs = (
+				known, introduction_ages, unreviewed_words, simulated_words,
+				today_val, introduced_today, introduced_per_day,
+			)
+		(
+			known, introduction_ages, unreviewed_words, simulated_words,
+			today_val, introduced_today, introduced_per_day,
+		) = self.graph_inputs
 		get_mass = _get_word_mass
 
 		total_mass = get_total_frequency_mass()
@@ -1397,11 +1408,6 @@ class ChineseInfoDialog(QDialog):
 		self.stats_label.setText(info_text)
 		if not reuse_data:
 			self.schedule_auto_bucket()
-
-	def _calc_todays_gain(self):
-		day_start_ms = (mw.col.sched.day_cutoff - 86400) * 1000
-		return _calc_interval_gain(day_start_ms)
-
 
 def _calc_interval_gain(start_ms, *, match_card_stats=False):
 	col = mw.col
